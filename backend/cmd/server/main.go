@@ -10,9 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"final-exam-savior/backend/internal/app"
 	"final-exam-savior/backend/internal/config"
-	httpserver "final-exam-savior/backend/internal/transport/http"
+	"final-exam-savior/backend/internal/controller"
+	"final-exam-savior/backend/internal/router"
+	"final-exam-savior/backend/internal/service"
 )
 
 func main() {
@@ -24,19 +25,18 @@ func main() {
 		panic(fmt.Errorf("load config: %w", err))
 	}
 
-	application, err := app.New(rootCtx, cfg)
+	svc, err := service.New(rootCtx, cfg)
 	if err != nil {
 		panic(fmt.Errorf("bootstrap app: %w", err))
 	}
-	defer func() {
-		_ = application.Close()
-	}()
+	defer func() { _ = svc.Close() }()
 
-	application.StartWorkers(rootCtx)
+	svc.StartWorkers(rootCtx)
+	ctl := controller.New(svc)
 
 	server := &http.Server{
 		Addr:         cfg.Server.Addr,
-		Handler:      httpserver.New(application).Router(),
+		Handler:      router.New(ctl, svc),
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		IdleTimeout:  cfg.Server.IdleTimeout,
