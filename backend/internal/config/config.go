@@ -114,7 +114,10 @@ type AppConfig struct {
 }
 
 func Load() (Config, error) {
-	_ = godotenv.Load(".env", "backend/.env")
+	// 尝试从多个可能的路径加载 .env 文件，按顺序尝试，不报错
+	_ = godotenv.Load(".env")
+	_ = godotenv.Load("../.env")
+	_ = godotenv.Load("../../.env")
 
 	v := viper.New()
 	v.SetEnvPrefix("APP")
