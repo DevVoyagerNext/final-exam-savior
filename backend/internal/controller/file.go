@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 
@@ -146,6 +147,21 @@ func (ctl *Controller) ViewResultHTML(c *gin.Context) {
 		return
 	}
 	c.Data(200, "text/html; charset=utf-8", body)
+}
+func (ctl *Controller) ViewSource(c *gin.Context) {
+	current, _ := utils.ContextCurrentUser(c)
+	id, err := utils.MustUint64Param(c, "fileId")
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	body, contentType, fileName, err := ctl.svc.ViewSourcePDF(c.Request.Context(), current, id)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=\"%s\"", fileName))
+	c.Data(http.StatusOK, contentType, body)
 }
 func (ctl *Controller) DownloadSource(c *gin.Context) {
 	current, _ := utils.ContextCurrentUser(c)

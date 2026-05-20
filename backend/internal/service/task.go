@@ -48,8 +48,14 @@ func (s *Service) consumeGenerateStream(ctx context.Context) {
 		for _, stream := range streams {
 			for _, msg := range stream.Messages {
 				if err := s.handleGenerateMessage(ctx, msg); err == nil {
-					// 处理成功，发送 ACK 确认消息已消费
-					_ = s.dao.Redis().XAck(ctx, s.cfg.Redis.GenerateStream, s.cfg.Redis.ConsumerGroup, msg.ID).Err()
+					// 成功处理后同时 ACK 和删除消息，避免 Stream 持续堆积历史记录。
+					s.ackAndDeleteStreamMessage(ctx, s.cfg.Redis.GenerateStream, msg.ID)
+				} else if shouldAckAndDeleteGenerateMessage(err) {
+					fmt.Printf("[Worker] Generate task terminal fail: msgID=%s, err=%v\n", msg.ID, err)
+					// 不可恢复错误直接确认并删除消息，避免卡在 pending list。
+					s.ackAndDeleteStreamMessage(ctx, s.cfg.Redis.GenerateStream, msg.ID)
+				} else {
+					fmt.Printf("[Worker] Generate task retryable fail: msgID=%s, err=%v\n", msg.ID, err)
 				}
 			}
 		}
@@ -76,11 +82,16 @@ func (s *Service) consumePreviewStream(ctx context.Context) {
 		for _, stream := range streams {
 			for _, msg := range stream.Messages {
 				if err := s.handlePreviewMessage(ctx, msg); err == nil {
-					_ = s.dao.Redis().XAck(ctx, s.cfg.Redis.PreviewStream, s.cfg.Redis.ConsumerGroup, msg.ID).Err()
+					s.ackAndDeleteStreamMessage(ctx, s.cfg.Redis.PreviewStream, msg.ID)
 				}
 			}
 		}
 	}
+}
+
+func (s *Service) ackAndDeleteStreamMessage(ctx context.Context, stream string, messageID string) {
+	_ = s.dao.Redis().XAck(ctx, stream, s.cfg.Redis.ConsumerGroup, messageID).Err()
+	_ = s.dao.Redis().XDel(ctx, stream, messageID).Err()
 }
 
 // handleGenerateMessage 解析并分发 AI 生成任务消息
@@ -93,7 +104,11 @@ func (s *Service) handleGenerateMessage(ctx context.Context, msg redis.XMessage)
 	if err := json.Unmarshal([]byte(raw), &event); err != nil {
 		return fmt.Errorf("unmarshal generate event: %w", err)
 	}
-	return s.processGenerateTask(ctx, event.TaskID)
+	err := s.processGenerateTask(ctx, event.TaskID)
+	if err != nil {
+		fmt.Printf("[Worker] processGenerateTask failed for taskID=%d: %v\n", event.TaskID, err)
+	}
+	return err
 }
 
 // handlePreviewMessage 解析并分发预览转换任务消息
@@ -182,7 +197,7 @@ func (s *Service) RetryTaskItem(ctx context.Context, current *CurrentUser, taskI
 	if current.User.Role != "ADMIN" {
 		return newError(http.StatusForbidden, codeForbidden, "无权限", nil)
 	}
-	return normalizeErr(s.dao.Gorm().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.dao.Gorm().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 校验任务所属权
 		var task model.GenerateTask
 		if err := tx.Where("id = ? AND upload_user_id = ?", taskID, current.User.ID).First(&task).Error; err != nil {
@@ -220,25 +235,32 @@ func (s *Service) RetryTaskItem(ctx context.Context, current *CurrentUser, taskI
 		if err := tx.Create(&log).Error; err != nil {
 			return fmt.Errorf("create retry log: %w", err)
 		}
-		// 将任务重新塞回 Redis 队列触发处理
-		payload, err := json.Marshal(GenerateEvent{TaskID: taskID})
-		if err != nil {
-			return fmt.Errorf("marshal generate event: %w", err)
-		}
-		if err := s.dao.Redis().XAdd(ctx, &redis.XAddArgs{
-			Stream: s.cfg.Redis.GenerateStream,
-			Values: map[string]any{"payload": string(payload)},
-		}).Err(); err != nil {
-			return fmt.Errorf("push retry task to stream: %w", err)
-		}
 		return nil
-	}))
+	})
+
+	if err != nil {
+		return normalizeErr(err)
+	}
+
+	// 事务提交成功后，再发送消息到 Redis Stream 触发异步生成
+	payload, err := json.Marshal(GenerateEvent{TaskID: taskID})
+	if err != nil {
+		return fmt.Errorf("marshal generate event: %w", err)
+	}
+	if err := s.dao.Redis().XAdd(ctx, &redis.XAddArgs{
+		Stream: s.cfg.Redis.GenerateStream,
+		Values: map[string]any{"payload": string(payload)},
+	}).Err(); err != nil {
+		return fmt.Errorf("push retry task to stream: %w", err)
+	}
+	return nil
 }
 
 // enqueuePreviewTask 将预览转换任务加入异步处理队列
 func (s *Service) enqueuePreviewTask(ctx context.Context, userID uint64, file model.LearningFile) error {
 	now := time.Now()
-	return normalizeErr(s.dao.Gorm().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var pushTaskID uint64
+	err := s.dao.Gorm().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 创建预览转换任务记录
 		task := model.PreviewConversionTask{
 			FileID:            &file.ID,
@@ -252,19 +274,26 @@ func (s *Service) enqueuePreviewTask(ctx context.Context, userID uint64, file mo
 		if err := tx.Create(&task).Error; err != nil {
 			return fmt.Errorf("create preview conversion task: %w", err)
 		}
-		// 发送 Redis 消息
-		payload, err := json.Marshal(PreviewEvent{ConversionTaskID: task.ID})
-		if err != nil {
-			return fmt.Errorf("marshal preview event: %w", err)
-		}
-		if err := s.dao.Redis().XAdd(ctx, &redis.XAddArgs{
-			Stream: s.cfg.Redis.PreviewStream,
-			Values: map[string]any{"payload": string(payload)},
-		}).Err(); err != nil {
-			return fmt.Errorf("push preview event: %w", err)
-		}
+		pushTaskID = task.ID
 		return nil
-	}))
+	})
+
+	if err != nil {
+		return normalizeErr(err)
+	}
+
+	// 发送 Redis 消息
+	payload, err := json.Marshal(PreviewEvent{ConversionTaskID: pushTaskID})
+	if err != nil {
+		return fmt.Errorf("marshal preview event: %w", err)
+	}
+	if err := s.dao.Redis().XAdd(ctx, &redis.XAddArgs{
+		Stream: s.cfg.Redis.PreviewStream,
+		Values: map[string]any{"payload": string(payload)},
+	}).Err(); err != nil {
+		return fmt.Errorf("push preview event: %w", err)
+	}
+	return nil
 }
 
 // processPreviewTask 在新方案下不再做转 PDF，而是把预览状态直接切为可在线预览
@@ -360,10 +389,16 @@ func (s *Service) processGenerateTask(ctx context.Context, taskID uint64) error 
 	_ = s.dao.Gorm().WithContext(ctx).Model(&task).Updates(map[string]any{"status": "PROCESSING", "started_at": now}).Error
 	_ = s.dao.Gorm().WithContext(ctx).Model(&model.FileGenerateRecord{}).Where("file_id = ?", file.ID).Update("total_status", "PROCESSING").Error
 
-	// 1. 从源文件中提取纯文本内容
-	sourceText, err := s.extractSourceText(ctx, file)
+	// 1. 获取文档 file_id (使用阿里百炼上传文档流)
+	fileReader, err := s.storage.Download(ctx, file.SourceObjectURL)
 	if err != nil {
-		return s.failGenerateTask(ctx, task, items, err)
+		return s.failGenerateTask(ctx, task, items, fmt.Errorf("download source file: %w", err))
+	}
+	defer fileReader.Close()
+
+	fileID, err := s.ai.UploadFile(ctx, file.SourceFileName, fileReader)
+	if err != nil {
+		return s.failGenerateTask(ctx, task, items, fmt.Errorf("upload to ali bailian: %w", err))
 	}
 
 	// 2. 并发处理各个子项（题目、知识点、扩展题）
@@ -377,7 +412,8 @@ func (s *Service) processGenerateTask(ctx context.Context, taskID uint64) error 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if itemErr := s.processGenerateTaskItem(ctx, task, file, itemCopy, sourceText); itemErr != nil {
+			// 注意：这里我们传递了 fileID 进去，而不是提取出的纯文本
+			if itemErr := s.processGenerateTaskItem(ctx, task, file, itemCopy, fileID); itemErr != nil {
 				errCh <- itemErr
 			}
 		}()
@@ -422,11 +458,11 @@ func (s *Service) processGenerateTask(ctx context.Context, taskID uint64) error 
 }
 
 // processGenerateTaskItem 调用 AI 生成单个子项内容并保存
-func (s *Service) processGenerateTaskItem(ctx context.Context, task model.GenerateTask, file model.LearningFile, item model.GenerateTaskItem, sourceText string) error {
+func (s *Service) processGenerateTaskItem(ctx context.Context, task model.GenerateTask, file model.LearningFile, item model.GenerateTaskItem, fileID string) error {
 	now := time.Now()
 	_ = s.dao.Gorm().WithContext(ctx).Model(&item).Updates(map[string]any{"status": "PROCESSING", "started_at": now}).Error
-	// 调用 AI 接口生成 HTML 内容
-	html, err := s.ai.GenerateHTML(ctx, item.ItemType, sourceText)
+	// 调用 阿里百炼 AI 接口生成 HTML 内容 (带 file_id)
+	html, err := s.ai.GenerateHTMLWithDocument(ctx, item.ItemType, fileID)
 	if err != nil {
 		msg := err.Error()
 		_ = s.dao.Gorm().WithContext(ctx).Model(&item).Updates(map[string]any{
@@ -434,6 +470,18 @@ func (s *Service) processGenerateTaskItem(ctx context.Context, task model.Genera
 			"finished_at":        time.Now(),
 			"last_error_message": msg,
 		}).Error
+		_ = s.syncGenerateRecordItem(ctx, file.ID, item.ItemType, "FAIL", nil, msg, time.Now())
+		return err
+	}
+	html, err = sanitizeGeneratedHTML(html)
+	if err != nil {
+		msg := err.Error()
+		_ = s.dao.Gorm().WithContext(ctx).Model(&item).Updates(map[string]any{
+			"status":             "FAIL",
+			"finished_at":        time.Now(),
+			"last_error_message": msg,
+		}).Error
+		_ = s.syncGenerateRecordItem(ctx, file.ID, item.ItemType, "FAIL", nil, msg, time.Now())
 		return err
 	}
 	// 将生成的 HTML 上传到存储
@@ -445,6 +493,7 @@ func (s *Service) processGenerateTaskItem(ctx context.Context, task model.Genera
 			"finished_at":        time.Now(),
 			"last_error_message": msg,
 		}).Error
+		_ = s.syncGenerateRecordItem(ctx, file.ID, item.ItemType, "FAIL", nil, msg, time.Now())
 		return err
 	}
 	// 更新子项状态和关联记录
@@ -490,12 +539,39 @@ func (s *Service) failGenerateTask(ctx context.Context, task model.GenerateTask,
 				"finished_at":        now,
 				"last_error_message": msg,
 			}).Error
+			if task.FileID != nil {
+				_ = s.syncGenerateRecordItem(ctx, *task.FileID, item.ItemType, "FAIL", nil, msg, now)
+			}
 		}
 	}
 	if task.FileID != nil {
-		_ = s.dao.Gorm().WithContext(ctx).Model(&model.FileGenerateRecord{}).Where("file_id = ?", *task.FileID).Update("total_status", "FAIL").Error
+		_ = s.dao.Gorm().WithContext(ctx).Model(&model.FileGenerateRecord{}).Where("file_id = ?", *task.FileID).Updates(map[string]any{
+			"total_status":      "FAIL",
+			"last_generated_at": now,
+		}).Error
 	}
 	return err
+}
+
+func (s *Service) syncGenerateRecordItem(ctx context.Context, fileID uint64, itemType string, status string, objectURL *string, lastError string, finished time.Time) error {
+	var record model.FileGenerateRecord
+	if err := s.dao.Gorm().WithContext(ctx).Where("file_id = ?", fileID).First(&record).Error; err != nil {
+		return err
+	}
+	updates := map[string]any{
+		"item_status":        status,
+		"last_error_message": nil,
+		"result_object_url":  objectURL,
+		"last_success_at":    nil,
+	}
+	if status == "SUCCESS" {
+		updates["last_success_at"] = finished
+	} else {
+		updates["last_error_message"] = lastError
+	}
+	return s.dao.Gorm().WithContext(ctx).Model(&model.FileGenerateRecordItem{}).
+		Where("generate_record_id = ? AND item_type = ?", record.ID, itemType).
+		Updates(updates).Error
 }
 
 // extractSourceText 从源文件中提取纯文本（支持文本、图片 OCR、文档解析）
@@ -506,7 +582,7 @@ func (s *Service) extractSourceText(ctx context.Context, file model.LearningFile
 		return "", fmt.Errorf("sign source url: %w", err)
 	}
 	// 如果是纯文本类型，直接下载并读取内容
-	if isPlainText(file.SourceFileType) {
+	if isPlainTextFile(file.SourceFileType, file.SourceFileName) {
 		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, signed, nil)
 		if reqErr != nil {
 			return "", fmt.Errorf("build text download request: %w", reqErr)
@@ -516,11 +592,19 @@ func (s *Service) extractSourceText(ctx context.Context, file model.LearningFile
 			return "", fmt.Errorf("download text source: %w", respErr)
 		}
 		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			return "", fmt.Errorf("download text source status %d: %s", resp.StatusCode, string(body))
+		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20)) // 限制读取 2MB
 		if readErr != nil {
 			return "", fmt.Errorf("read text source: %w", readErr)
 		}
-		return string(body), nil
+		text := strings.TrimSpace(string(body))
+		if text == "" {
+			return "", fmt.Errorf("text source is empty")
+		}
+		return text, nil
 	}
 	// 如果是图片，调用 AI 进行 OCR 识别
 	if strings.HasPrefix(file.SourceFileType, "image/") {
@@ -563,4 +647,78 @@ func (s *Service) notifyGenerateResult(ctx context.Context, task model.GenerateT
 		ErrorSummary:       optionalString(lastError),
 		ExpiresAt:          time.Now().Add(30 * 24 * time.Hour),
 	}).Error
+}
+
+func shouldAckAndDeleteGenerateMessage(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return true
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	if message == "" {
+		return true
+	}
+	for _, signature := range retryableGenerateErrorSignatures() {
+		if strings.Contains(message, signature) {
+			return false
+		}
+	}
+	for _, signature := range terminalGenerateErrorSignatures() {
+		if strings.Contains(message, signature) {
+			return true
+		}
+	}
+	// 默认按终态失败处理，避免消息永久堆积在 pending list。
+	return true
+}
+
+func retryableGenerateErrorSignatures() []string {
+	return []string{
+		"context deadline exceeded",
+		"timeout",
+		"i/o timeout",
+		"connection refused",
+		"connection reset",
+		"broken pipe",
+		"unexpected eof",
+		"eof",
+		"tls handshake timeout",
+		"temporarily unavailable",
+		"too many requests",
+		"rate limit",
+		"server closed idle connection",
+		"dial tcp",
+		"lookup ",
+		"no such host",
+		"status 429",
+		"status 500",
+		"status 502",
+		"status 503",
+		"status 504",
+	}
+}
+
+func terminalGenerateErrorSignatures() []string {
+	return []string{
+		"generate payload missing",
+		"unmarshal generate event",
+		"提取到的源文本为空",
+		"提取到的内容疑似系统错误信息",
+		"local parser extracted empty text",
+		"local parser extract failed",
+		"parser response text is empty",
+		"text source is empty",
+		"ai 返回的 html 为空",
+		"ai 返回的内容不是完整 html 文档",
+		"ai 返回的 html 疑似错误分析内容",
+		"source status: 404",
+		"download text source status 404",
+		"download parser source status 404",
+		"unexpected status: 404",
+	}
 }

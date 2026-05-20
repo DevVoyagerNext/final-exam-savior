@@ -179,7 +179,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("smtp.port", 587)
 	v.SetDefault("smtp.from", "")
 
-	v.SetDefault("ai.timeout", 90*time.Second)
+	v.SetDefault("ai.timeout", 5*time.Minute)
 	v.SetDefault("geetest.validate_url", "https://gcaptcha4.geetest.com/validate")
 	v.SetDefault("geetest.timeout", 8*time.Second)
 	v.SetDefault("preview.timeout", 2*time.Minute)

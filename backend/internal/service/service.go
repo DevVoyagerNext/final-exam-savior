@@ -54,7 +54,7 @@ func New(ctx context.Context, cfg config.Config) (*Service, error) {
 		storage:      storage,
 		localStorage: localStorage,
 		ai:           platform.NewOpenAICompatClient(cfg.AI),
-		parser:       platform.NewHTTPParser(cfg.Parser),
+		parser:       platform.NewParser(cfg.Parser),
 		converter:    platform.NewHTTPConverter(cfg.Preview),
 		httpClient:   &http.Client{Timeout: 2 * time.Minute},
 	}

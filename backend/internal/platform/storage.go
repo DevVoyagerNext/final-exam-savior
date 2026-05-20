@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +25,7 @@ type ObjectStorage interface {
 	Upload(ctx context.Context, objectKey string, contentType string, data []byte) (string, error)
 	SignGetURL(ctx context.Context, objectURL string, expire time.Duration) (string, error)
 	Delete(ctx context.Context, objectURL string) error
+	Download(ctx context.Context, objectURL string) (io.ReadCloser, error)
 }
 
 type OSSStorage struct {
@@ -254,6 +256,51 @@ func (s *HybridStorage) SignGetURL(ctx context.Context, objectURL string, expire
 		return rawURL, nil
 	}
 	return s.primary.SignGetURL(ctx, objectURL, expire)
+}
+
+func (s *OSSStorage) Download(_ context.Context, objectURL string) (io.ReadCloser, error) {
+	objectKey, err := s.objectKey(objectURL)
+	if err != nil {
+		return nil, err
+	}
+	body, err := s.bucket.GetObject(objectKey)
+	if err != nil {
+		return nil, fmt.Errorf("download oss object %s: %w", objectKey, err)
+	}
+	return body, nil
+}
+
+func (s *LocalFileStorage) Download(_ context.Context, objectURL string) (io.ReadCloser, error) {
+	objectKey, err := s.objectKey(objectURL)
+	if err != nil {
+		return nil, err
+	}
+	localPath := filepath.Join(s.cfg.LocalBasePath, objectKey)
+	file, err := os.Open(localPath)
+	if err != nil {
+		return nil, fmt.Errorf("open local file %s: %w", localPath, err)
+	}
+	return file, nil
+}
+
+func (s *HybridStorage) Download(ctx context.Context, objectURL string) (io.ReadCloser, error) {
+	target, ok := s.storageForURL(objectURL)
+	if ok {
+		return target.Download(ctx, objectURL)
+	}
+	if _, ok := passthroughRemoteURL(objectURL); ok {
+		// 如果是第三方 URL，可以使用 HTTP GET 下载，这里简单起见使用 http.Get
+		resp, err := http.Get(objectURL)
+		if err != nil {
+			return nil, fmt.Errorf("download remote url %s: %w", objectURL, err)
+		}
+		if resp.StatusCode >= 300 {
+			resp.Body.Close()
+			return nil, fmt.Errorf("download remote url %s: status %d", objectURL, resp.StatusCode)
+		}
+		return resp.Body, nil
+	}
+	return s.primary.Download(ctx, objectURL)
 }
 
 func (s *HybridStorage) Delete(ctx context.Context, objectURL string) error {

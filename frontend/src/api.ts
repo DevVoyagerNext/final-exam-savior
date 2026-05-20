@@ -183,6 +183,58 @@ async function unwrap<T>(promise: Promise<{ data: ApiEnvelope<T> }>) {
   return response.data.data
 }
 
+function isProtectedPreviewUrl(resourceUrl: string) {
+  if (!resourceUrl) {
+    return false
+  }
+  if (resourceUrl.startsWith('/')) {
+    return resourceUrl.startsWith('/api/')
+  }
+  try {
+    const parsed = new URL(resourceUrl, window.location.origin)
+    return parsed.origin === window.location.origin && parsed.pathname.startsWith('/api/')
+  } catch {
+    return false
+  }
+}
+
+function normalizeProtectedRequestUrl(resourceUrl: string) {
+  const apiBase = API_BASE_URL.trim()
+  if (!apiBase) {
+    return resourceUrl
+  }
+
+  if (resourceUrl.startsWith('http://') || resourceUrl.startsWith('https://')) {
+    const parsed = new URL(resourceUrl)
+    if (parsed.origin !== window.location.origin) {
+      return resourceUrl
+    }
+    const pathWithQuery = `${parsed.pathname}${parsed.search}`
+    if (apiBase.startsWith('/') && pathWithQuery.startsWith(apiBase)) {
+      const stripped = pathWithQuery.slice(apiBase.length)
+      return stripped || '/'
+    }
+    return pathWithQuery
+  }
+
+  if (apiBase.startsWith('/') && resourceUrl.startsWith(apiBase)) {
+    const stripped = resourceUrl.slice(apiBase.length)
+    return stripped || '/'
+  }
+
+  return resourceUrl
+}
+
+export async function resolveOpenableUrl(resourceUrl: string) {
+  if (!isProtectedPreviewUrl(resourceUrl)) {
+    return resourceUrl
+  }
+  const response = await http.get<Blob>(normalizeProtectedRequestUrl(resourceUrl), { responseType: 'blob' })
+  const blobUrl = window.URL.createObjectURL(response.data)
+  window.setTimeout(() => window.URL.revokeObjectURL(blobUrl), 5 * 60 * 1000)
+  return blobUrl
+}
+
 function withCaptchaPayload<T extends object>(payload: T, captchaData: GeetestValidateResult) {
   return {
     ...payload,

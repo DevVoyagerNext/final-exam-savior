@@ -11,6 +11,7 @@ func RegisterFileRoutes(r *gin.RouterGroup, c *controller.Controller, authRequir
 	r.GET("/files", authRequired, c.ListFiles)
 	r.GET("/files/:fileId", authRequired, c.FileDetail)
 	r.GET("/files/:fileId/preview-source", authRequired, c.PreviewSource)
+	r.GET("/files/:fileId/view-source", authRequired, c.ViewSource)
 	r.POST("/admin/files/:fileId/preview-conversion/retry", authRequired, c.RetryPreviewConversion)
 	r.GET("/files/:fileId/preview-result", authRequired, c.PreviewResult)
 	r.GET("/files/:fileId/view-result", authRequired, c.ViewResultHTML)

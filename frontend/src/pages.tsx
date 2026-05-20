@@ -35,7 +35,7 @@ import type { UploadFile } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
 
-import { adminApi, authApi, fileApi, notificationApi, taskApi } from './api.ts'
+import { adminApi, authApi, fileApi, notificationApi, resolveOpenableUrl, taskApi } from './api.ts'
 import { useAuth } from './auth.tsx'
 import { GeetestCaptchaPanel } from './geetest.tsx'
 import type {
@@ -128,17 +128,17 @@ function formatBytes(size: number) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
-function openLink(url: string | null | undefined) {
+async function openLink(url: string | null | undefined) {
   if (!url) {
     message.warning('当前资源尚未生成或暂不可预览')
     return
   }
-  window.open(url, '_blank', 'noopener,noreferrer')
+  window.open(await resolveOpenableUrl(url), '_blank', 'noopener,noreferrer')
 }
 
 async function openRemoteLink(loader: () => Promise<string | null | undefined>) {
   try {
-    openLink(await loader())
+    await openLink(await loader())
   } catch {
     message.error('获取文件访问地址失败，请检查后端服务或存储配置')
   }
@@ -498,7 +498,7 @@ export function FileListPage() {
 
   const previewMutation = useMutation({
     mutationFn: async (fileId: number) => fileApi.previewSource(fileId),
-    onSuccess: (data) => openLink(data.previewUrl),
+    onSuccess: (data) => void openLink(data.previewUrl),
     onError: () => message.error('获取预览地址失败，请检查后端服务或存储配置'),
   })
 

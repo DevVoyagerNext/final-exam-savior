@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -89,10 +90,8 @@ func aggregateTaskStatus(items []model.GenerateTaskItem) string {
 	switch {
 	case successCnt == len(items):
 		return "SUCCESS"
-	case failCnt == len(items):
+	case failCnt > 0:
 		return "FAIL"
-	case successCnt > 0 && failCnt > 0:
-		return "PARTIAL_SUCCESS"
 	default:
 		return "PROCESSING"
 	}
@@ -180,6 +179,17 @@ func detectRenderType(contentType string) string {
 func isPlainText(contentType string) bool {
 	return strings.Contains(contentType, "text/plain") || strings.Contains(contentType, "text/markdown") || strings.Contains(contentType, "application/json")
 }
+func isPlainTextFile(contentType string, fileName string) bool {
+	if isPlainText(contentType) {
+		return true
+	}
+	switch strings.ToLower(pathExt(fileName)) {
+	case ".txt", ".md", ".markdown", ".json":
+		return true
+	default:
+		return false
+	}
+}
 func isMarkdownPreviewType(contentType string, fileName string) bool {
 	ext := strings.ToLower(pathExt(fileName))
 	switch ext {
@@ -187,6 +197,13 @@ func isMarkdownPreviewType(contentType string, fileName string) bool {
 		return true
 	}
 	return strings.Contains(contentType, "text/markdown")
+}
+func isPDFPreviewType(contentType string, fileName string) bool {
+	ext := strings.ToLower(pathExt(fileName))
+	if ext == ".pdf" {
+		return true
+	}
+	return strings.Contains(contentType, "application/pdf")
 }
 func isOfficePreviewType(contentType string, fileName string) bool {
 	ext := strings.ToLower(pathExt(fileName))
@@ -202,11 +219,10 @@ func isOfficePreviewType(contentType string, fileName string) bool {
 func isGoogleViewerType(contentType string, fileName string) bool {
 	ext := strings.ToLower(pathExt(fileName))
 	switch ext {
-	case ".pdf", ".txt", ".json":
+	case ".txt", ".json":
 		return true
 	}
-	return strings.Contains(contentType, "application/pdf") ||
-		strings.Contains(contentType, "text/plain") ||
+	return strings.Contains(contentType, "text/plain") ||
 		strings.Contains(contentType, "application/json")
 }
 func pathExt(name string) string {
@@ -215,4 +231,74 @@ func pathExt(name string) string {
 		return ""
 	}
 	return name[idx:]
+}
+
+func validateExtractedSourceText(text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("提取到的源文本为空")
+	}
+	if looksLikeSystemErrorContent(text) {
+		return fmt.Errorf("提取到的内容疑似系统错误信息，已中止生成")
+	}
+	return nil
+}
+
+func sanitizeGeneratedHTML(raw string) (string, error) {
+	html := strings.TrimSpace(strings.TrimPrefix(raw, "\ufeff"))
+	if html == "" {
+		return "", fmt.Errorf("AI 返回的 HTML 为空")
+	}
+	if strings.HasPrefix(html, "```") {
+		html = stripMarkdownCodeFence(html)
+	}
+	normalized := strings.TrimSpace(html)
+	if !looksLikeHTMLDocument(normalized) {
+		return "", fmt.Errorf("AI 返回的内容不是完整 HTML 文档")
+	}
+	if looksLikeSystemErrorContent(normalized) {
+		return "", fmt.Errorf("AI 返回的 HTML 疑似错误分析内容，已拒绝保存")
+	}
+	return normalized, nil
+}
+
+func stripMarkdownCodeFence(input string) string {
+	lines := strings.Split(strings.TrimSpace(input), "\n")
+	if len(lines) < 3 || !strings.HasPrefix(strings.TrimSpace(lines[0]), "```") {
+		return input
+	}
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if last != "```" {
+		return input
+	}
+	return strings.Join(lines[1:len(lines)-1], "\n")
+}
+
+func looksLikeHTMLDocument(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	return strings.Contains(lower, "<html") ||
+		strings.Contains(lower, "<body") ||
+		strings.HasPrefix(lower, "<!doctype html")
+}
+
+func looksLikeSystemErrorContent(input string) bool {
+	lower := strings.ToLower(input)
+	signatures := []string{
+		"error analysis:",
+		"root cause:",
+		"setting up fake worker failed",
+		"only urls with a scheme in:",
+		"received protocol 'c:'",
+		"officeparser esm loader issue",
+		"at officeparser.parseoffice",
+		"at getwrappederror",
+		"appdata\\local\\npm-cache\\_npx",
+	}
+	matches := 0
+	for _, signature := range signatures {
+		if strings.Contains(lower, signature) {
+			matches++
+		}
+	}
+	return matches >= 2
 }
