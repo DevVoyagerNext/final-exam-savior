@@ -133,6 +133,20 @@ func (ctl *Controller) PreviewResult(c *gin.Context) {
 	}
 	ctl.ok(c, data)
 }
+func (ctl *Controller) ViewResultHTML(c *gin.Context) {
+	current, _ := utils.ContextCurrentUser(c)
+	id, err := utils.MustUint64Param(c, "fileId")
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	body, err := ctl.svc.ViewResultHTML(c.Request.Context(), current, id, c.Query("itemType"))
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.Data(200, "text/html; charset=utf-8", body)
+}
 func (ctl *Controller) DownloadSource(c *gin.Context) {
 	current, _ := utils.ContextCurrentUser(c)
 	id, err := utils.MustUint64Param(c, "fileId")

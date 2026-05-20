@@ -2,7 +2,9 @@ export type UserRole = 'ADMIN' | 'USER'
 export type UserStatus = 'ENABLED' | 'DISABLED'
 export type Visibility = 'PUBLIC' | 'PRIVATE_ADMIN'
 export type GenerateStatus = 'PENDING' | 'PROCESSING' | 'PARTIAL_SUCCESS' | 'SUCCESS' | 'FAIL'
+export type PreviewStatus = 'PENDING' | 'PROCESSING' | 'SUCCESS' | 'FAIL'
 export type TaskItemType = 'QUESTION' | 'KNOWLEDGE' | 'EXTENDED'
+export type InviteCodeStatus = 'ACTIVE' | 'DISABLED'
 export type NotificationStatus = 'READ' | 'UNREAD'
 export type NotificationType =
   | 'GENERATE_SUCCESS'
@@ -29,7 +31,124 @@ export interface UserProfile {
 export interface AuthResult {
   token: string
   expireAt: string
+  accessToken: string
+  accessExpireAt: string
+  refreshToken: string
+  refreshExpireAt: string
   user: UserProfile
+}
+
+export interface SendEmailCodeRequest {
+  email: string
+  captchaData: GeetestValidateResult
+}
+
+export interface SendRegisterCodeResponse {
+  expireSeconds: number
+  nextSendAfterSeconds: number
+}
+
+export interface LoginRequest {
+  email: string
+  password: string
+  captchaData: GeetestValidateResult
+}
+
+export interface RegisterRequest {
+  email: string
+  emailCode: string
+  password: string
+  confirmPassword: string
+  inviteCode: string
+  captchaData: GeetestValidateResult
+}
+
+export interface RefreshTokenRequest {
+  refreshToken: string
+}
+
+export interface ResetPasswordRequest {
+  email: string
+  emailCode: string
+  newPassword: string
+  confirmPassword: string
+}
+
+export interface ChangePasswordRequest {
+  oldPassword: string
+  newPassword: string
+  confirmPassword: string
+}
+
+export interface CreateCategoryRequest {
+  name: string
+  sortNo: number
+}
+
+export interface UpdateCategoryRequest extends CreateCategoryRequest {
+  status: 'ENABLED' | 'DISABLED'
+}
+
+export interface UploadFileResponse {
+  fileId: number
+  sourceFileName: string
+  sourceFileHash: string
+  reuseExisting: boolean
+  generateRecordId: number
+  taskId: number
+  taskNo: string
+  taskStatus: string
+  taskRemark: string | null
+}
+
+export interface DeleteFileRequest {
+  confirmText: string
+}
+
+export interface SignedUrlResponse {
+  url: string
+  expireAt: string
+}
+
+export interface CreateInviteCodeRequest {
+  codeType: 'CUSTOM' | 'RANDOM'
+  code?: string
+  totalQuota: number
+  remark?: string
+}
+
+export interface BatchGenerateInviteCodesRequest {
+  generateCount: number
+  totalQuota: number
+  remark?: string
+  codeType: 'RANDOM'
+}
+
+export interface BatchGenerateInviteCodesResponse {
+  batchNo: string
+  generateCount: number
+  codes: InviteCodeRecord[]
+}
+
+export interface UpdateInviteRemarkRequest {
+  remark: string
+}
+
+export interface MarkNotificationReadBatchRequest {
+  notificationIds: number[]
+}
+
+export interface UnreadCountResponse {
+  unreadCount: number
+}
+
+export interface RetryTaskItemParams {
+  taskId: number
+  taskItemId: number
+}
+
+export interface DisableUserRequest {
+  remark: string
 }
 
 export interface GeetestValidateResult {
@@ -38,6 +157,7 @@ export interface GeetestValidateResult {
   pass_token: string
   gen_time: string
   captcha_id: string
+  sign_token?: string
 }
 
 export interface FileCategory {
@@ -78,7 +198,7 @@ export interface FileDetail extends FileListItem {
   }
   previewRecord: {
     previewMode: 'DIRECT' | 'CONVERT_TO_PDF'
-    previewStatus: 'SUCCESS' | 'PROCESSING' | 'FAIL'
+    previewStatus: PreviewStatus
     previewObjectUrl: string | null
   }
 }
@@ -86,7 +206,7 @@ export interface FileDetail extends FileListItem {
 export interface PreviewInfo {
   fileId: number
   previewMode?: 'DIRECT' | 'CONVERT_TO_PDF'
-  previewStatus?: 'SUCCESS' | 'PROCESSING' | 'FAIL'
+  previewStatus?: PreviewStatus
   sourceFileType?: string
   previewUrl: string | null
   expireAt: string | null
@@ -140,7 +260,7 @@ export interface InviteCodeRecord {
   remainingQuota: number
   remark: string
   batchNo: string | null
-  status: 'ACTIVE' | 'DISABLED'
+  status: InviteCodeStatus
 }
 
 export interface PagedResult<T> {
@@ -184,6 +304,6 @@ export interface InviteCodeFilters {
   pageNo?: number
   pageSize?: number
   keyword?: string
-  status?: 'ACTIVE' | 'DISABLED'
+  status?: InviteCodeStatus
   batchNo?: string
 }

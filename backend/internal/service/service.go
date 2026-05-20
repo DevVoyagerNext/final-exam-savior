@@ -77,23 +77,51 @@ func New(ctx context.Context, cfg config.Config) (*Service, error) {
 	return svc, nil
 }
 func buildStorage(cfg config.Config) (platform.ObjectStorage, *platform.LocalFileStorage, error) {
+	localStorage, localErr := buildOptionalLocalStorage(cfg)
+	ossStorage, ossErr := buildOptionalOSSStorage(cfg)
+
 	switch strings.ToLower(strings.TrimSpace(cfg.Storage.Mode)) {
 	case "", "local":
-		localStorage, err := platform.NewLocalFileStorage(cfg.Storage, cfg.Auth.JWTSecret)
-		if err != nil {
-			return nil, nil, fmt.Errorf("init local storage: %w", err)
+		if localErr != nil {
+			return nil, nil, fmt.Errorf("init local storage: %w", localErr)
 		}
-		return localStorage, localStorage, nil
+		if localStorage == nil {
+			return nil, nil, fmt.Errorf("init local storage: local storage config is incomplete")
+		}
+		return platform.NewHybridStorage(localStorage, localStorage, ossStorage), localStorage, nil
 	case "oss":
-		storage, err := platform.NewOSSStorage(cfg.OSS)
-		if err != nil {
-			return nil, nil, err
+		if ossErr != nil {
+			return nil, nil, ossErr
 		}
-		return storage, nil, nil
+		if ossStorage == nil {
+			return nil, nil, fmt.Errorf("init oss storage: oss config is incomplete")
+		}
+		return platform.NewHybridStorage(ossStorage, localStorage, ossStorage), localStorage, nil
 	default:
 		return nil, nil, fmt.Errorf("unsupported storage mode: %s", cfg.Storage.Mode)
 	}
 }
+
+func buildOptionalLocalStorage(cfg config.Config) (*platform.LocalFileStorage, error) {
+	if strings.TrimSpace(cfg.Storage.LocalBasePath) == "" {
+		return nil, nil
+	}
+	if strings.TrimSpace(cfg.Auth.JWTSecret) == "" {
+		return nil, nil
+	}
+	return platform.NewLocalFileStorage(cfg.Storage, cfg.Auth.JWTSecret)
+}
+
+func buildOptionalOSSStorage(cfg config.Config) (*platform.OSSStorage, error) {
+	if strings.TrimSpace(cfg.OSS.Endpoint) == "" ||
+		strings.TrimSpace(cfg.OSS.Bucket) == "" ||
+		strings.TrimSpace(cfg.OSS.AccessKeyID) == "" ||
+		strings.TrimSpace(cfg.OSS.AccessKeySecret) == "" {
+		return nil, nil
+	}
+	return platform.NewOSSStorage(cfg.OSS)
+}
+
 func (s *Service) DB() *gorm.DB { return s.dao.Gorm() }
 
 func (s *Service) ensureSeeds(ctx context.Context) error {

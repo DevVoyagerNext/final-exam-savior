@@ -3,7 +3,6 @@ package model
 func AutoMigrateModels() []any {
 	return []any{
 		&User{},
-		&UserSession{},
 		&InviteCode{},
 		&FileCategory{},
 		&LearningFile{},

@@ -32,23 +32,37 @@ import {
   Upload,
 } from 'antd'
 import type { UploadFile } from 'antd'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
 
 import { adminApi, authApi, fileApi, notificationApi, taskApi } from './api.ts'
 import { useAuth } from './auth.tsx'
 import { GeetestCaptchaPanel } from './geetest.tsx'
 import type {
+  BatchGenerateInviteCodesRequest,
+  ChangePasswordRequest,
+  CreateInviteCodeRequest,
+  CreateCategoryRequest,
   FileCategory,
   FileFilters,
   FileListItem,
   GeetestValidateResult,
   GenerateStatus,
+  InviteCodeRecord,
   InviteCodeFilters,
+  LoginRequest,
   NotificationFilters,
   NotificationRecord,
   NotificationType,
+  PreviewStatus,
+  RegisterRequest,
+  ResetPasswordRequest,
+  RetryTaskItemParams,
+  DisableUserRequest,
+  TaskFilters,
   TaskItemType,
+  UpdateCategoryRequest,
+  UpdateInviteRemarkRequest,
   UserFilters,
   Visibility,
 } from './types.ts'
@@ -80,12 +94,28 @@ const itemTypeLabelMap: Record<TaskItemType, string> = {
   EXTENDED: '扩展题页',
 }
 
+const taskItemTypes: TaskItemType[] = ['QUESTION', 'KNOWLEDGE', 'EXTENDED']
+
 const notificationTypeLabelMap: Record<NotificationType, string> = {
   GENERATE_SUCCESS: '生成成功',
   PARTIAL_SUCCESS: '部分成功',
   GENERATE_FAIL: '生成失败',
   PREVIEW_CONVERSION_SUCCESS: '预览转换成功',
   PREVIEW_CONVERSION_FAIL: '预览转换失败',
+}
+
+const previewStatusLabelMap: Record<PreviewStatus, string> = {
+  PENDING: '待转换',
+  PROCESSING: '转换中',
+  SUCCESS: '可预览',
+  FAIL: '转换失败',
+}
+
+const previewStatusColorMap: Record<PreviewStatus, string> = {
+  PENDING: 'default',
+  PROCESSING: 'processing',
+  SUCCESS: 'success',
+  FAIL: 'error',
 }
 
 function formatBytes(size: number) {
@@ -104,6 +134,22 @@ function openLink(url: string | null | undefined) {
     return
   }
   window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+async function openRemoteLink(loader: () => Promise<string | null | undefined>) {
+  try {
+    openLink(await loader())
+  } catch {
+    message.error('获取文件访问地址失败，请检查后端服务或存储配置')
+  }
+}
+
+function isTaskItemType(value: string | undefined): value is TaskItemType {
+  return taskItemTypes.includes((value ?? '').toUpperCase() as TaskItemType)
+}
+
+function isRunningGenerateStatus(status: GenerateStatus | undefined) {
+  return status === 'PENDING' || status === 'PROCESSING'
 }
 
 function StatusTag({ status }: { status: GenerateStatus }) {
@@ -144,10 +190,7 @@ export function LoginPage() {
   const navigate = useNavigate()
   const { login } = useAuth()
 
-  const onFinish = async (values: {
-    email: string
-    password: string
-  }) => {
+  const onFinish = async (values: Omit<LoginRequest, 'captchaData'>) => {
     if (!captchaData) {
       message.warning('请先完成安全验证')
       return
@@ -213,20 +256,14 @@ export function RegisterPage() {
     }
     setSending(true)
     try {
-      await authApi.sendRegisterCode({ email, captchaData })
-      message.success('验证码已发送')
+      const result = await authApi.sendRegisterCode({ email, captchaData })
+      message.success(`验证码已发送，${Math.floor(result.expireSeconds / 60)} 分钟内有效`)
     } finally {
       setSending(false)
     }
   }
 
-  const onFinish = async (values: {
-    email: string
-    emailCode: string
-    password: string
-    confirmPassword: string
-    inviteCode: string
-  }) => {
+  const onFinish = async (values: Omit<RegisterRequest, 'captchaData'>) => {
     if (!captchaData) {
       message.warning('请先完成安全验证')
       return
@@ -326,12 +363,7 @@ export function ForgotPasswordPage() {
     }
   }
 
-  const onFinish = async (values: {
-    email: string
-    emailCode: string
-    newPassword: string
-    confirmPassword: string
-  }) => {
+  const onFinish = async (values: ResetPasswordRequest) => {
     setSubmitting(true)
     try {
       await authApi.resetPassword(values)
@@ -400,11 +432,7 @@ export function ChangePasswordPage() {
   const { logout } = useAuth()
   const navigate = useNavigate()
 
-  const onFinish = async (values: {
-    oldPassword: string
-    newPassword: string
-    confirmPassword: string
-  }) => {
+  const onFinish = async (values: ChangePasswordRequest) => {
     setLoading(true)
     try {
       await authApi.changePassword(values)
@@ -471,6 +499,7 @@ export function FileListPage() {
   const previewMutation = useMutation({
     mutationFn: async (fileId: number) => fileApi.previewSource(fileId),
     onSuccess: (data) => openLink(data.previewUrl),
+    onError: () => message.error('获取预览地址失败，请检查后端服务或存储配置'),
   })
 
   return (
@@ -505,6 +534,15 @@ export function FileListPage() {
         </Row>
       </PageHeaderCard>
       <Card variant="borderless">
+        {filesQuery.isError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="文件列表加载失败"
+            description="当前显示的数据不再回退到演示结果，请检查后端接口状态后重试。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <Form layout="vertical" onFinish={(values) => setFilters({ ...filters, ...values })}>
           <Row gutter={[16, 8]}>
             <Col xs={24} md={8}>
@@ -568,7 +606,7 @@ export function FileListPage() {
                   <Button
                     size="small"
                     icon={<DownloadOutlined />}
-                    onClick={async () => openLink((await fileApi.downloadSource(record.id)).url)}
+                    onClick={() => void openRemoteLink(async () => (await fileApi.downloadSource(record.id)).url)}
                   >
                     下载
                   </Button>
@@ -583,12 +621,23 @@ export function FileListPage() {
 }
 
 export function FileDetailPage() {
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const { isAdmin } = useAuth()
   const params = useParams()
   const fileId = Number(params.fileId)
   const detailQuery = useQuery({
     queryKey: ['file-detail', fileId],
     queryFn: () => fileApi.getFileDetail(fileId),
     enabled: Number.isFinite(fileId),
+  })
+
+  const retryPreviewMutation = useMutation({
+    mutationFn: (targetFileId: number) => adminApi.retryPreviewConversion(targetFileId),
+    onSuccess: async () => {
+      message.success('已提交预览转换重试请求')
+      await queryClient.invalidateQueries({ queryKey: ['file-detail', fileId] })
+    },
   })
 
   if (!Number.isFinite(fileId)) {
@@ -603,6 +652,16 @@ export function FileDetailPage() {
         title={record?.sourceFileName ?? '文件详情'}
         description="展示文件基础信息、生成状态、预览状态和结果入口。"
       />
+      {detailQuery.isError ? (
+        <Card variant="borderless">
+          <Alert
+            type="error"
+            showIcon
+            message="文件详情加载失败"
+            description="当前未再使用演示数据回退，请检查后端接口和登录态。"
+          />
+        </Card>
+      ) : null}
       {!record ? (
         <Card variant="borderless">
           <Empty description="未找到文件详情" />
@@ -624,8 +683,8 @@ export function FileDetailPage() {
               <Descriptions.Item label="文件大小">{formatBytes(record.sourceFileSize)}</Descriptions.Item>
               <Descriptions.Item label="上传时间">{record.uploadTime}</Descriptions.Item>
               <Descriptions.Item label="预览状态" span={2}>
-                <Tag color={record.previewRecord.previewStatus === 'SUCCESS' ? 'success' : 'processing'}>
-                  {record.previewRecord.previewStatus === 'SUCCESS' ? '可预览' : '转换中'}
+                <Tag color={previewStatusColorMap[record.previewRecord.previewStatus]}>
+                  {previewStatusLabelMap[record.previewRecord.previewStatus]}
                 </Tag>
               </Descriptions.Item>
             </Descriptions>
@@ -638,13 +697,23 @@ export function FileDetailPage() {
                   <Space>
                     <Button
                       icon={<EyeOutlined />}
-                      onClick={async () => openLink((await fileApi.previewSource(record.id)).previewUrl)}
+                      onClick={() => void openRemoteLink(async () => (await fileApi.previewSource(record.id)).previewUrl)}
                     >
                       在线预览
                     </Button>
+                    {isAdmin &&
+                    record.previewRecord.previewMode === 'CONVERT_TO_PDF' &&
+                    record.previewRecord.previewStatus === 'FAIL' ? (
+                      <Button
+                        loading={retryPreviewMutation.isPending}
+                        onClick={() => retryPreviewMutation.mutate(record.id)}
+                      >
+                        重试预览转换
+                      </Button>
+                    ) : null}
                     <Button
                       icon={<DownloadOutlined />}
-                      onClick={async () => openLink((await fileApi.downloadSource(record.id)).url)}
+                      onClick={() => void openRemoteLink(async () => (await fileApi.downloadSource(record.id)).url)}
                     >
                       下载源文件
                     </Button>
@@ -652,11 +721,15 @@ export function FileDetailPage() {
                 }
               >
                 <Alert
-                  type={record.previewRecord.previewStatus === 'SUCCESS' ? 'success' : 'info'}
+                  type={record.previewRecord.previewStatus === 'FAIL' ? 'error' : record.previewRecord.previewStatus === 'SUCCESS' ? 'success' : 'info'}
                   title={
                     record.previewRecord.previewStatus === 'SUCCESS'
                       ? '当前源文件支持在线预览'
-                      : '当前文件首次预览需要转换为 PDF，处理中时仍保留下载入口'
+                      : record.previewRecord.previewStatus === 'FAIL'
+                        ? '当前预览转换失败，管理员可手动重试转换任务'
+                        : record.previewRecord.previewStatus === 'PENDING'
+                          ? '当前文件首次预览需要转换为 PDF，点击在线预览后会自动发起转换'
+                          : '当前文件预览转换处理中，仍保留下载入口'
                   }
                   showIcon
                 />
@@ -669,10 +742,10 @@ export function FileDetailPage() {
                   renderItem={(item) => (
                     <List.Item
                       actions={[
-                        <Button key="preview" size="small" onClick={async () => openLink((await fileApi.previewResult(record.id, item.itemType)).previewUrl)}>
-                          预览
+                        <Button key="preview" size="small" onClick={() => navigate(`/files/${record.id}/results/${item.itemType}`)}>
+                          前端查看
                         </Button>,
-                        <Button key="download" size="small" onClick={async () => openLink((await fileApi.downloadResult(record.id, item.itemType)).url)}>
+                        <Button key="download" size="small" onClick={() => void openRemoteLink(async () => (await fileApi.downloadResult(record.id, item.itemType)).url)}>
                           下载
                         </Button>,
                       ]}
@@ -689,6 +762,109 @@ export function FileDetailPage() {
           </Row>
         </>
       )}
+    </div>
+  )
+}
+
+export function GeneratedHtmlPreviewPage() {
+  const navigate = useNavigate()
+  const params = useParams()
+  const fileId = Number(params.fileId)
+  const itemTypeParam = params.itemType?.toUpperCase()
+  const itemType = isTaskItemType(itemTypeParam) ? itemTypeParam : null
+
+  const detailQuery = useQuery({
+    queryKey: ['file-detail', fileId],
+    queryFn: () => fileApi.getFileDetail(fileId),
+    enabled: Number.isFinite(fileId),
+  })
+
+  const previewQuery = useQuery({
+    queryKey: ['file-result-preview', fileId, itemType],
+    queryFn: () => fileApi.previewResult(fileId, itemType!),
+    enabled: Number.isFinite(fileId) && itemType !== null,
+  })
+
+  const htmlQuery = useQuery({
+    queryKey: ['file-result-html', fileId, itemType],
+    queryFn: () => fileApi.previewResultHtml(fileId, itemType!),
+    enabled: Number.isFinite(fileId) && itemType !== null && Boolean(previewQuery.data?.previewUrl),
+    retry: false,
+  })
+
+  if (!Number.isFinite(fileId)) {
+    return <Navigate to="/files" replace />
+  }
+
+  if (itemType === null) {
+    return <Navigate to={`/files/${fileId}`} replace />
+  }
+
+  const previewData = previewQuery.data
+
+  return (
+    <div className="page-stack">
+      <PageHeaderCard
+        title={`${detailQuery.data?.sourceFileName ?? '文件'} / ${itemTypeLabelMap[itemType]}`}
+        description="生成后的 HTML 已放入前端路由页面，可直接在当前界面内访问和预览。"
+        extra={
+          <Space wrap>
+            <Button onClick={() => navigate(`/files/${fileId}`)}>返回文件详情</Button>
+            <Button icon={<ReloadOutlined />} onClick={() => void previewQuery.refetch()}>
+              刷新结果
+            </Button>
+            <Button
+              type="primary"
+              icon={<DownloadOutlined />}
+              onClick={() => void openRemoteLink(async () => (await fileApi.downloadResult(fileId, itemType)).url)}
+            >
+              下载 HTML
+            </Button>
+          </Space>
+        }
+      >
+        <Space wrap>
+          {taskItemTypes.map((entry) => (
+            <Button
+              key={entry}
+              type={entry === itemType ? 'primary' : 'default'}
+              onClick={() => navigate(`/files/${fileId}/results/${entry}`)}
+            >
+              {itemTypeLabelMap[entry]}
+            </Button>
+          ))}
+        </Space>
+      </PageHeaderCard>
+
+      <Card variant="borderless" loading={detailQuery.isLoading || previewQuery.isLoading || htmlQuery.isLoading}>
+        {htmlQuery.data ? (
+          <iframe
+            title={`${detailQuery.data?.sourceFileName ?? '文件'}-${itemType}`}
+            srcDoc={htmlQuery.data}
+            style={{ width: '100%', minHeight: 820, border: 0, borderRadius: 12, background: '#fff' }}
+          />
+        ) : htmlQuery.isError ? (
+          <Alert
+            type="error"
+            showIcon
+            message={`${itemTypeLabelMap[itemType]}加载失败`}
+            description="已获取到结果记录，但前端内嵌渲染失败。你仍可先使用“下载 HTML”验证生成内容。"
+          />
+        ) : (
+          <Alert
+            type="info"
+            showIcon
+            message={`${itemTypeLabelMap[itemType]}暂时不可访问`}
+            description={
+              previewData?.itemStatus === 'PROCESSING'
+                ? '当前 HTML 正在生成中，请稍后点击“刷新结果”重新查看。'
+                : previewData?.itemStatus === 'FAIL'
+                  ? '当前 HTML 生成失败，请回到任务页或文件详情页查看状态后重试。'
+                  : '当前 HTML 还未生成完成，请稍后再试。'
+            }
+          />
+        )}
+      </Card>
     </div>
   )
 }
@@ -773,21 +949,25 @@ export function UploadPage() {
 
 export function TaskListPage() {
   const queryClient = useQueryClient()
-  const [filters, setFilters] = useState({ pageNo: 1, pageSize: 10 })
+  const [filters, setFilters] = useState<TaskFilters>({ pageNo: 1, pageSize: 10 })
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
   const tasksQuery = useQuery({
     queryKey: ['tasks', filters],
     queryFn: () => taskApi.listTasks(filters),
+    refetchInterval: (query) => {
+      const list = query.state.data?.list ?? []
+      return list.some((item) => isRunningGenerateStatus(item.status)) ? 5000 : false
+    },
   })
   const taskDetailQuery = useQuery({
     queryKey: ['task-detail', selectedTaskId],
     queryFn: () => taskApi.getTask(selectedTaskId ?? 0),
     enabled: selectedTaskId !== null,
+    refetchInterval: (query) => (isRunningGenerateStatus(query.state.data?.status) ? 3000 : false),
   })
 
   const retryMutation = useMutation({
-    mutationFn: ({ taskId, taskItemId }: { taskId: number; taskItemId: number }) =>
-      taskApi.retryTaskItem(taskId, taskItemId),
+    mutationFn: (params: RetryTaskItemParams) => taskApi.retryTaskItem(params),
     onSuccess: async () => {
       message.success('失败子任务已提交重试')
       await Promise.all([
@@ -804,6 +984,15 @@ export function TaskListPage() {
         description="第一版仅管理员可访问，支持查看总任务状态、子任务状态、自动重试次数以及手动重试失败项。"
       />
       <Card variant="borderless">
+        {tasksQuery.isError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="任务列表加载失败"
+            description="当前未再回退到演示任务数据，请检查后端任务接口。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <Form layout="inline" onFinish={(values) => setFilters({ ...filters, ...values })}>
           <Form.Item label="状态" name="status">
             <Select
@@ -943,6 +1132,17 @@ export function NotificationListPage() {
     },
   })
 
+  const markReadMutation = useMutation({
+    mutationFn: (notificationId: number) => notificationApi.markRead(notificationId),
+    onSuccess: async () => {
+      message.success('已标记为已读')
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['notifications'] }),
+        queryClient.invalidateQueries({ queryKey: ['unread-count'] }),
+      ])
+    },
+  })
+
   return (
     <div className="page-stack">
       <PageHeaderCard
@@ -1011,11 +1211,21 @@ export function NotificationListPage() {
             {
               title: '操作',
               key: 'actions',
-              width: 160,
+              width: 220,
               render: (_, record) => (
-                <Button size="small" onClick={() => navigate(`/notifications/${record.id}`)}>
-                  查看详情
-                </Button>
+                <Space>
+                  <Button size="small" onClick={() => navigate(`/notifications/${record.id}`)}>
+                    查看详情
+                  </Button>
+                  <Button
+                    size="small"
+                    disabled={record.status === 'READ'}
+                    loading={markReadMutation.isPending}
+                    onClick={() => markReadMutation.mutate(record.id)}
+                  >
+                    标记已读
+                  </Button>
+                </Space>
               ),
             },
           ]}
@@ -1026,6 +1236,7 @@ export function NotificationListPage() {
 }
 
 export function NotificationDetailPage() {
+  const queryClient = useQueryClient()
   const navigate = useNavigate()
   const params = useParams()
   const notificationId = Number(params.notificationId)
@@ -1034,6 +1245,16 @@ export function NotificationDetailPage() {
     queryFn: () => notificationApi.getNotification(notificationId),
     enabled: Number.isFinite(notificationId),
   })
+
+  useEffect(() => {
+    if (!detailQuery.data) {
+      return
+    }
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['notifications'] }),
+      queryClient.invalidateQueries({ queryKey: ['unread-count'] }),
+    ])
+  }, [detailQuery.data, queryClient])
 
   if (!Number.isFinite(notificationId)) {
     return <Navigate to="/notifications" replace />
@@ -1071,6 +1292,9 @@ export function NotificationDetailPage() {
 export function UsersPage() {
   const queryClient = useQueryClient()
   const [filters, setFilters] = useState<UserFilters>({ pageNo: 1, pageSize: 10 })
+  const [disableOpen, setDisableOpen] = useState(false)
+  const [targetUserId, setTargetUserId] = useState<number | null>(null)
+  const [disableForm] = Form.useForm()
   const usersQuery = useQuery({
     queryKey: ['admin-users', filters],
     queryFn: () => adminApi.listUsers(filters),
@@ -1088,6 +1312,9 @@ export function UsersPage() {
     mutationFn: ({ userId, remark }: { userId: number; remark: string }) => adminApi.disableUser(userId, remark),
     onSuccess: async () => {
       message.success('用户已禁用')
+      setDisableOpen(false)
+      setTargetUserId(null)
+      disableForm.resetFields()
       await queryClient.invalidateQueries({ queryKey: ['admin-users'] })
     },
   })
@@ -1149,12 +1376,11 @@ export function UsersPage() {
                     size="small"
                     danger
                     disabled={record.status === 'DISABLED'}
-                    onClick={() =>
-                      disableMutation.mutate({
-                        userId: record.id,
-                        remark: '后台手动禁用',
-                      })
-                    }
+                    onClick={() => {
+                      setTargetUserId(record.id)
+                      setDisableOpen(true)
+                      disableForm.resetFields()
+                    }}
                   >
                     禁用
                   </Button>
@@ -1164,6 +1390,34 @@ export function UsersPage() {
           ]}
         />
       </Card>
+      <Modal
+        open={disableOpen}
+        title="禁用用户"
+        onCancel={() => {
+          setDisableOpen(false)
+          setTargetUserId(null)
+        }}
+        onOk={() => disableForm.submit()}
+        confirmLoading={disableMutation.isPending}
+      >
+        <Form
+          form={disableForm}
+          layout="vertical"
+          onFinish={(values: DisableUserRequest) => {
+            if (targetUserId === null) {
+              return
+            }
+            disableMutation.mutate({
+              userId: targetUserId,
+              remark: values.remark,
+            })
+          }}
+        >
+          <Form.Item label="禁用原因" name="remark" rules={[{ required: true, message: '请输入禁用原因' }]}>
+            <Input.TextArea rows={4} placeholder="请输入禁用备注，例如违规操作、滥用系统等" />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   )
 }
@@ -1176,15 +1430,17 @@ export function CategoriesPage() {
   const categoriesQuery = useQuery({ queryKey: ['file-categories'], queryFn: fileApi.getCategories })
 
   const saveMutation = useMutation({
-    mutationFn: async (values: { name: string; sortNo: number; status?: 'ENABLED' | 'DISABLED' }) => {
+    mutationFn: async (values: CreateCategoryRequest & { status?: UpdateCategoryRequest['status'] }) => {
       if (editing) {
-        return adminApi.updateCategory(editing.id, {
+        const payload: UpdateCategoryRequest = {
           name: values.name,
           sortNo: values.sortNo,
           status: values.status ?? 'ENABLED',
-        })
+        }
+        return adminApi.updateCategory(editing.id, payload)
       }
-      return adminApi.createCategory({ name: values.name, sortNo: values.sortNo })
+      const payload: CreateCategoryRequest = { name: values.name, sortNo: values.sortNo }
+      return adminApi.createCategory(payload)
     },
     onSuccess: async () => {
       message.success(editing ? '分类已更新' : '分类已创建')
@@ -1304,16 +1560,18 @@ export function InviteCodesPage() {
   const [filters, setFilters] = useState<InviteCodeFilters>({ pageNo: 1, pageSize: 10 })
   const [singleOpen, setSingleOpen] = useState(false)
   const [batchOpen, setBatchOpen] = useState(false)
+  const [remarkOpen, setRemarkOpen] = useState(false)
+  const [editingInvite, setEditingInvite] = useState<InviteCodeRecord | null>(null)
   const [singleForm] = Form.useForm()
   const [batchForm] = Form.useForm()
+  const [remarkForm] = Form.useForm()
   const inviteCodesQuery = useQuery({
     queryKey: ['invite-codes', filters],
     queryFn: () => adminApi.listInviteCodes(filters),
   })
 
   const createMutation = useMutation({
-    mutationFn: (values: { codeType: 'CUSTOM' | 'RANDOM'; code?: string; totalQuota: number; remark?: string }) =>
-      adminApi.createInviteCode(values),
+    mutationFn: (values: CreateInviteCodeRequest) => adminApi.createInviteCode(values),
     onSuccess: async () => {
       message.success('邀请码已创建')
       setSingleOpen(false)
@@ -1323,12 +1581,23 @@ export function InviteCodesPage() {
   })
 
   const batchMutation = useMutation({
-    mutationFn: (values: { generateCount: number; totalQuota: number; remark?: string; codeType: 'RANDOM' }) =>
-      adminApi.batchGenerateInviteCodes(values),
+    mutationFn: (values: BatchGenerateInviteCodesRequest) => adminApi.batchGenerateInviteCodes(values),
     onSuccess: async (data) => {
-      message.success(`批量生成成功，共 ${data.generateCount} 个`)
+      message.success(`批量生成成功，共 ${data.generateCount} 个，批次号 ${data.batchNo}`)
       setBatchOpen(false)
       batchForm.resetFields()
+      await queryClient.invalidateQueries({ queryKey: ['invite-codes'] })
+    },
+  })
+
+  const updateRemarkMutation = useMutation({
+    mutationFn: ({ inviteCodeId, remark }: { inviteCodeId: number; remark: string }) =>
+      adminApi.updateInviteRemark(inviteCodeId, remark),
+    onSuccess: async () => {
+      message.success('备注已更新')
+      setRemarkOpen(false)
+      setEditingInvite(null)
+      remarkForm.resetFields()
       await queryClient.invalidateQueries({ queryKey: ['invite-codes'] })
     },
   })
@@ -1396,11 +1665,23 @@ export function InviteCodesPage() {
             {
               title: '操作',
               key: 'actions',
-              width: 120,
-              render: (_, record: { id: number }) => (
-                <Button size="small" danger onClick={() => deleteMutation.mutate(record.id)}>
-                  停用删除
-                </Button>
+              width: 220,
+              render: (_, record: InviteCodeRecord) => (
+                <Space>
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      setEditingInvite(record)
+                      setRemarkOpen(true)
+                      remarkForm.setFieldsValue({ remark: record.remark })
+                    }}
+                  >
+                    修改备注
+                  </Button>
+                  <Button size="small" danger onClick={() => deleteMutation.mutate(record.id)}>
+                    停用删除
+                  </Button>
+                </Space>
               ),
             },
           ]}
@@ -1469,6 +1750,34 @@ export function InviteCodesPage() {
           <Alert type="info" showIcon title="接口文档已预留导出 xlsx 文件流能力，可在联调后补充一键导出按钮。" />
         </Form>
       </Modal>
+      <Modal
+        open={remarkOpen}
+        title="修改邀请码备注"
+        onCancel={() => {
+          setRemarkOpen(false)
+          setEditingInvite(null)
+        }}
+        onOk={() => remarkForm.submit()}
+        confirmLoading={updateRemarkMutation.isPending}
+      >
+        <Form
+          form={remarkForm}
+          layout="vertical"
+          onFinish={(values: UpdateInviteRemarkRequest) => {
+            if (!editingInvite) {
+              return
+            }
+            updateRemarkMutation.mutate({ inviteCodeId: editingInvite.id, remark: values.remark })
+          }}
+        >
+          <Form.Item label="邀请码" required>
+            <Input value={editingInvite?.code ?? ''} disabled />
+          </Form.Item>
+          <Form.Item label="备注" name="remark">
+            <Input placeholder="请输入新的备注信息" />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   )
 }
@@ -1484,6 +1793,15 @@ export function AdminFilesPage() {
     <div className="page-stack">
       <PageHeaderCard title="管理员文件总览" description="支持分页、筛选查看平台文件，并为后续文件删除、任务查看扩展留出入口。" />
       <Card variant="borderless">
+        {filesQuery.isError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="管理员文件总览加载失败"
+            description="当前未再回退到演示文件数据，请检查后端接口。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <Form layout="inline" onFinish={(values) => setFilters({ ...filters, ...values })}>
           <Form.Item label="关键词" name="keyword">
             <Input placeholder="文件名关键字" />

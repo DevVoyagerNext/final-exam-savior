@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -92,9 +94,9 @@ func (s *Service) GetFileDetail(ctx context.Context, current *CurrentUser, fileI
 		"items":           generateItems,
 	}
 	item["previewRecord"] = map[string]any{
-		"previewMode":      preview.PreviewMode,
-		"previewStatus":    preview.PreviewStatus,
-		"previewObjectUrl": preview.PreviewObjectURL,
+		"previewMode":      "DIRECT",
+		"previewStatus":    "SUCCESS",
+		"previewObjectUrl": nil,
 	}
 	return item, nil
 }
@@ -367,59 +369,20 @@ func (s *Service) PreviewSource(ctx context.Context, current *CurrentUser, fileI
 	if err != nil {
 		return nil, err
 	}
-	var preview model.FilePreviewRecord
-	if err := s.dao.Gorm().WithContext(ctx).Where("file_id = ?", fileID).First(&preview).Error; err != nil {
-		return nil, newError(http.StatusNotFound, codeNotFound, "预览记录不存在", err)
+	previewURL, renderType, err := s.buildSourcePreviewURL(ctx, file)
+	if err != nil {
+		return nil, newError(http.StatusInternalServerError, codeInternal, "生成预览地址失败", err)
 	}
-	if preview.PreviewMode == "DIRECT" {
-		signed, err := s.storage.SignGetURL(ctx, file.SourceObjectURL, s.cfg.App.SignedURLTTL)
-		if err != nil {
-			return nil, newError(http.StatusInternalServerError, codeInternal, "生成预览地址失败", err)
-		}
-		return map[string]any{
-			"fileId":         file.ID,
-			"previewMode":    preview.PreviewMode,
-			"previewStatus":  "SUCCESS",
-			"sourceFileType": file.SourceFileType,
-			"previewUrl":     signed,
-			"expireAt":       formatTime(time.Now().Add(s.cfg.App.SignedURLTTL)),
-			"renderType":     detectRenderType(file.SourceFileType),
-			"downloadUrl":    fmt.Sprintf("/api/v1/files/%d/download-source", file.ID),
-		}, nil
-	}
-	if preview.PreviewStatus == "SUCCESS" && preview.PreviewObjectURL != nil {
-		signed, err := s.storage.SignGetURL(ctx, *preview.PreviewObjectURL, s.cfg.App.SignedURLTTL)
-		if err != nil {
-			return nil, newError(http.StatusInternalServerError, codeInternal, "生成预览地址失败", err)
-		}
-		return map[string]any{
-			"fileId":         file.ID,
-			"previewMode":    preview.PreviewMode,
-			"previewStatus":  preview.PreviewStatus,
-			"sourceFileType": file.SourceFileType,
-			"previewUrl":     signed,
-			"expireAt":       formatTime(time.Now().Add(s.cfg.App.SignedURLTTL)),
-			"renderType":     "PDF_SCROLL",
-			"downloadUrl":    fmt.Sprintf("/api/v1/files/%d/download-source", file.ID),
-		}, nil
-	}
-
-	if preview.PreviewStatus == "PENDING" || preview.PreviewStatus == "FAIL" {
-		if err := s.enqueuePreviewTask(ctx, current.User.ID, file); err != nil {
-			return nil, err
-		}
-		_ = s.dao.Gorm().WithContext(ctx).Model(&preview).Update("preview_status", "PROCESSING").Error
-	}
+	s.markPreviewReady(ctx, file.ID)
 	return map[string]any{
 		"fileId":         file.ID,
-		"previewMode":    preview.PreviewMode,
-		"previewStatus":  "PROCESSING",
+		"previewMode":    "DIRECT",
+		"previewStatus":  "SUCCESS",
 		"sourceFileType": file.SourceFileType,
-		"previewUrl":     nil,
-		"expireAt":       nil,
-		"renderType":     "PDF_SCROLL",
+		"previewUrl":     previewURL,
+		"expireAt":       formatTime(time.Now().Add(s.cfg.App.SignedURLTTL)),
+		"renderType":     renderType,
 		"downloadUrl":    fmt.Sprintf("/api/v1/files/%d/download-source", file.ID),
-		"message":        "预览文件正在生成中，请稍后刷新",
 	}, nil
 }
 
@@ -427,11 +390,11 @@ func (s *Service) RetryPreviewConversion(ctx context.Context, current *CurrentUs
 	if current.User.Role != "ADMIN" {
 		return newError(http.StatusForbidden, codeForbidden, "无权限", nil)
 	}
-	var file model.LearningFile
-	if err := s.dao.Gorm().WithContext(ctx).First(&file, fileID).Error; err != nil {
+	if _, err := s.loadAccessibleFile(ctx, current, fileID); err != nil {
 		return newError(http.StatusNotFound, codeNotFound, "文件不存在", err)
 	}
-	return s.enqueuePreviewTask(ctx, current.User.ID, file)
+	s.markPreviewReady(ctx, fileID)
+	return nil
 }
 
 func (s *Service) PreviewResult(ctx context.Context, current *CurrentUser, fileID uint64, itemType string) (map[string]any, error) {
@@ -469,6 +432,45 @@ func (s *Service) PreviewResult(ctx context.Context, current *CurrentUser, fileI
 	}, nil
 }
 
+func (s *Service) ViewResultHTML(ctx context.Context, current *CurrentUser, fileID uint64, itemType string) ([]byte, error) {
+	file, err := s.loadAccessibleFile(ctx, current, fileID)
+	if err != nil {
+		return nil, err
+	}
+	var generateRecord model.FileGenerateRecord
+	if err := s.dao.Gorm().WithContext(ctx).Where("file_id = ?", file.ID).First(&generateRecord).Error; err != nil {
+		return nil, newError(http.StatusNotFound, codeNotFound, "生成记录不存在", err)
+	}
+	var item model.FileGenerateRecordItem
+	if err := s.dao.Gorm().WithContext(ctx).Where("generate_record_id = ? AND item_type = ?", generateRecord.ID, itemType).First(&item).Error; err != nil {
+		return nil, newError(http.StatusNotFound, codeNotFound, "结果不存在", err)
+	}
+	if item.ResultObjectURL == nil {
+		return nil, newError(http.StatusConflict, codeConflict, "HTML 结果尚未生成", nil)
+	}
+	signed, err := s.storage.SignGetURL(ctx, *item.ResultObjectURL, s.cfg.App.SignedURLTTL)
+	if err != nil {
+		return nil, newError(http.StatusInternalServerError, codeInternal, "生成结果访问地址失败", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, signed, nil)
+	if err != nil {
+		return nil, newError(http.StatusInternalServerError, codeInternal, "创建结果读取请求失败", err)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, newError(http.StatusInternalServerError, codeInternal, "读取 HTML 结果失败", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, newError(http.StatusBadGateway, codeInternal, "HTML 结果文件读取失败", fmt.Errorf("unexpected status: %d", resp.StatusCode))
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, newError(http.StatusInternalServerError, codeInternal, "读取 HTML 结果内容失败", err)
+	}
+	return body, nil
+}
+
 func (s *Service) DownloadSource(ctx context.Context, current *CurrentUser, fileID uint64) (map[string]any, error) {
 	file, err := s.loadAccessibleFile(ctx, current, fileID)
 	if err != nil {
@@ -482,6 +484,33 @@ func (s *Service) DownloadSource(ctx context.Context, current *CurrentUser, file
 		"url":      signed,
 		"expireAt": formatTime(time.Now().Add(s.cfg.App.SignedURLTTL)),
 	}, nil
+}
+
+func (s *Service) buildSourcePreviewURL(ctx context.Context, file model.LearningFile) (string, string, error) {
+	signed, err := s.storage.SignGetURL(ctx, file.SourceObjectURL, s.cfg.App.SignedURLTTL)
+	if err != nil {
+		return "", "", err
+	}
+	if isMarkdownPreviewType(file.SourceFileType, file.SourceFileName) {
+		return "https://markdown-viewer-one.vercel.app/?url=" + url.QueryEscape(signed), "MARKDOWN_RENDER", nil
+	}
+	if isOfficePreviewType(file.SourceFileType, file.SourceFileName) {
+		return "https://view.officeapps.live.com/op/view.aspx?src=" + url.QueryEscape(signed), "PDF_SCROLL", nil
+	}
+	if isGoogleViewerType(file.SourceFileType, file.SourceFileName) {
+		return "https://docs.google.com/gview?embedded=true&url=" + url.QueryEscape(signed), "PDF_SCROLL", nil
+	}
+	return signed, detectRenderType(file.SourceFileType), nil
+}
+
+func (s *Service) markPreviewReady(ctx context.Context, fileID uint64) {
+	_ = s.dao.Gorm().WithContext(ctx).Model(&model.FilePreviewRecord{}).Where("file_id = ?", fileID).Updates(map[string]any{
+		"preview_mode":       "DIRECT",
+		"preview_status":     "SUCCESS",
+		"preview_object_url": nil,
+		"last_error_message": nil,
+		"last_success_at":    time.Now(),
+	}).Error
 }
 
 func (s *Service) DownloadResult(ctx context.Context, current *CurrentUser, fileID uint64, itemType string) (map[string]any, error) {

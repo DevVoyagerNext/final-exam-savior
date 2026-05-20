@@ -17,6 +17,10 @@ type LoginRequest struct {
 	platform.CaptchaPayload
 }
 
+type RefreshTokenRequest struct {
+	RefreshToken string `json:"refreshToken"`
+}
+
 type ChangePasswordRequest struct {
 	OldPassword     string `json:"oldPassword"`
 	NewPassword     string `json:"newPassword"`

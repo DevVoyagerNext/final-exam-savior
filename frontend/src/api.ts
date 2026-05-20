@@ -1,21 +1,22 @@
 import axios from 'axios'
+import type { AxiosError, InternalAxiosRequestConfig } from 'axios'
 
-import { API_BASE_URL, ENABLE_DEMO_MODE, STORAGE_TOKEN_KEY } from './config.ts'
 import {
-  demoAuthResult,
-  demoCategories,
-  demoFiles,
-  demoInviteCodes,
-  demoNotifications,
-  demoTasks,
-  demoUsers,
-  getDemoFileDetail,
-  getDemoNotification,
-  getDemoTask,
-} from './demo-data.ts'
+  API_BASE_URL,
+  STORAGE_REFRESH_TOKEN_KEY,
+  STORAGE_TOKEN_KEY,
+  STORAGE_USER_KEY,
+} from './config.ts'
 import type {
   ApiEnvelope,
   AuthResult,
+  BatchGenerateInviteCodesRequest,
+  BatchGenerateInviteCodesResponse,
+  ChangePasswordRequest,
+  CreateInviteCodeRequest,
+  CreateCategoryRequest,
+  DeleteFileRequest,
+  DisableUserRequest,
   FileCategory,
   FileDetail,
   FileFilters,
@@ -23,13 +24,26 @@ import type {
   GeetestValidateResult,
   InviteCodeFilters,
   InviteCodeRecord,
+  LoginRequest,
+  MarkNotificationReadBatchRequest,
   NotificationFilters,
   NotificationRecord,
   PagedResult,
   PreviewInfo,
+  RefreshTokenRequest,
+  RegisterRequest,
+  RetryTaskItemParams,
+  ResetPasswordRequest,
+  SendEmailCodeRequest,
+  SendRegisterCodeResponse,
+  SignedUrlResponse,
   TaskFilters,
   TaskRecord,
   TaskItemType,
+  UnreadCountResponse,
+  UploadFileResponse,
+  UpdateInviteRemarkRequest,
+  UpdateCategoryRequest,
   UserFilters,
   UserProfile,
 } from './types.ts'
@@ -39,6 +53,41 @@ const http = axios.create({
   timeout: 10_000,
 })
 
+const refreshHttp = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 10_000,
+})
+
+let refreshPromise: Promise<string | null> | null = null
+
+export class ApiError extends Error {
+  status?: number
+  code?: number
+  requestId?: string
+  data?: unknown
+
+  constructor(message: string, options?: { status?: number; code?: number; requestId?: string; data?: unknown }) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = options?.status
+    this.code = options?.code
+    this.requestId = options?.requestId
+    this.data = options?.data
+  }
+}
+
+function clearStoredAuth() {
+  localStorage.removeItem(STORAGE_TOKEN_KEY)
+  localStorage.removeItem(STORAGE_REFRESH_TOKEN_KEY)
+  localStorage.removeItem(STORAGE_USER_KEY)
+}
+
+function persistAuthResult(result: AuthResult) {
+  localStorage.setItem(STORAGE_TOKEN_KEY, result.accessToken)
+  localStorage.setItem(STORAGE_REFRESH_TOKEN_KEY, result.refreshToken)
+  localStorage.setItem(STORAGE_USER_KEY, JSON.stringify(result.user))
+}
+
 http.interceptors.request.use((config) => {
   const token = localStorage.getItem(STORAGE_TOKEN_KEY)
   if (token) {
@@ -47,70 +96,91 @@ http.interceptors.request.use((config) => {
   return config
 })
 
+function getEnvelopeData(value: unknown): ApiEnvelope<unknown> | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+  const envelope = value as Partial<ApiEnvelope<unknown>>
+  if (typeof envelope.code !== 'number' || typeof envelope.message !== 'string' || !('data' in envelope)) {
+    return null
+  }
+  return envelope as ApiEnvelope<unknown>
+}
+
+http.interceptors.response.use(
+  (response) => {
+    const envelope = getEnvelopeData(response.data)
+    if (envelope && envelope.code !== 0) {
+      throw new ApiError(envelope.message || '请求失败', {
+        status: response.status,
+        code: envelope.code,
+        requestId: typeof envelope.requestId === 'string' ? envelope.requestId : undefined,
+        data: envelope.data,
+      })
+    }
+    return response
+  },
+  async (error: AxiosError) => {
+    const original = error.config as (InternalAxiosRequestConfig & { _retry?: boolean }) | undefined
+    const isRefreshRequest = original?.url?.includes('/auth/refresh')
+    const responseEnvelope = getEnvelopeData(error.response?.data)
+    const businessCode = responseEnvelope?.code
+
+    if (error.response?.status !== 401 || businessCode !== 40101 || !original || original._retry || isRefreshRequest) {
+      if (error.response?.status === 401 && isRefreshRequest) {
+        clearStoredAuth()
+        window.location.href = '/login'
+      }
+      if (responseEnvelope) {
+        return Promise.reject(
+          new ApiError(responseEnvelope.message || error.message || '请求失败', {
+            status: error.response?.status,
+            code: responseEnvelope.code,
+            requestId: typeof responseEnvelope.requestId === 'string' ? responseEnvelope.requestId : undefined,
+            data: responseEnvelope.data,
+          }),
+        )
+      }
+      return Promise.reject(error)
+    }
+
+    const refreshToken = localStorage.getItem(STORAGE_REFRESH_TOKEN_KEY)
+    if (!refreshToken) {
+      clearStoredAuth()
+      window.location.href = '/login'
+      return Promise.reject(error)
+    }
+
+    original._retry = true
+    try {
+      if (!refreshPromise) {
+        refreshPromise = authApi.refresh(refreshToken)
+          .then((result) => {
+            persistAuthResult(result)
+            return result.accessToken
+          })
+          .finally(() => {
+            refreshPromise = null
+          })
+      }
+      const accessToken = await refreshPromise
+      if (!accessToken) {
+        throw new Error('refresh access token failed')
+      }
+      original.headers = original.headers ?? {}
+      original.headers.Authorization = `Bearer ${accessToken}`
+      return http(original)
+    } catch (refreshError) {
+      clearStoredAuth()
+      window.location.href = '/login'
+      return Promise.reject(refreshError)
+    }
+  }
+)
+
 async function unwrap<T>(promise: Promise<{ data: ApiEnvelope<T> }>) {
   const response = await promise
   return response.data.data
-}
-
-async function withDemoFallback<T>(request: () => Promise<T>, fallback: () => T | Promise<T>) {
-  try {
-    return await request()
-  } catch (error) {
-    if (ENABLE_DEMO_MODE) {
-      return await fallback()
-    }
-    throw error
-  }
-}
-
-function toPagedResult<T>(list: T[], pageNo = 1, pageSize = 10): PagedResult<T> {
-  return {
-    list,
-    pageNo,
-    pageSize,
-    total: list.length,
-    totalPages: Math.max(1, Math.ceil(list.length / pageSize)),
-  }
-}
-
-function filterFiles(filters?: FileFilters) {
-  return demoFiles.filter((item) => {
-    const keywordMatched =
-      !filters?.keyword || item.sourceFileName.toLowerCase().includes(filters.keyword.toLowerCase())
-    const categoryMatched = !filters?.categoryId || item.categoryId === filters.categoryId
-    const visibilityMatched = !filters?.visibility || item.visibility === filters.visibility
-    const statusMatched = !filters?.generateStatus || item.generateTotalStatus === filters.generateStatus
-    return keywordMatched && categoryMatched && visibilityMatched && statusMatched
-  })
-}
-
-function filterTasks(filters?: TaskFilters) {
-  return demoTasks.filter((item) => !filters?.status || item.status === filters.status)
-}
-
-function filterNotifications(filters?: NotificationFilters) {
-  return demoNotifications.filter((item) => {
-    const statusMatched = !filters?.status || item.status === filters.status
-    const typeMatched = !filters?.type || item.type === filters.type
-    return statusMatched && typeMatched
-  })
-}
-
-function filterUsers(filters?: UserFilters) {
-  return demoUsers.filter((item) => {
-    const emailMatched = !filters?.email || item.email.includes(filters.email)
-    const statusMatched = !filters?.status || item.status === filters.status
-    return emailMatched && statusMatched
-  })
-}
-
-function filterInviteCodes(filters?: InviteCodeFilters) {
-  return demoInviteCodes.filter((item) => {
-    const keywordMatched = !filters?.keyword || item.code.includes(filters.keyword)
-    const statusMatched = !filters?.status || item.status === filters.status
-    const batchMatched = !filters?.batchNo || item.batchNo === filters.batchNo
-    return keywordMatched && statusMatched && batchMatched
-  })
 }
 
 function withCaptchaPayload<T extends object>(payload: T, captchaData: GeetestValidateResult) {
@@ -121,417 +191,234 @@ function withCaptchaPayload<T extends object>(payload: T, captchaData: GeetestVa
     pass_token: captchaData.pass_token,
     gen_time: captchaData.gen_time,
     captcha_id: captchaData.captcha_id,
+    sign_token: captchaData.sign_token,
   }
 }
 
 export const authApi = {
-  async login(payload: {
-    email: string
-    password: string
-    captchaData: GeetestValidateResult
-  }) {
-    return withDemoFallback(
-      () =>
-        unwrap<AuthResult>(
-          http.post(
-            '/auth/login',
-            withCaptchaPayload(
-              {
-                email: payload.email,
-                password: payload.password,
-              },
-              payload.captchaData,
-            ),
-          ),
+  async login(payload: LoginRequest) {
+    return unwrap<AuthResult>(
+      http.post(
+        '/auth/login',
+        withCaptchaPayload(
+          {
+            email: payload.email,
+            password: payload.password,
+          },
+          payload.captchaData,
         ),
-      async () => ({
-        ...demoAuthResult,
-        user: {
-          ...demoAuthResult.user,
-          email: payload.email || demoAuthResult.user.email,
-        },
-      }),
+      ),
     )
   },
 
-  async register(payload: {
-    email: string
-    emailCode: string
-    password: string
-    confirmPassword: string
-    inviteCode: string
-    captchaData: GeetestValidateResult
-  }) {
-    return withDemoFallback(
-      () =>
-        unwrap<AuthResult>(
-          http.post(
-            '/auth/register',
-            withCaptchaPayload(
-              {
-                email: payload.email,
-                emailCode: payload.emailCode,
-                password: payload.password,
-                confirmPassword: payload.confirmPassword,
-                inviteCode: payload.inviteCode,
-              },
-              payload.captchaData,
-            ),
-          ),
+  async register(payload: RegisterRequest) {
+    return unwrap<AuthResult>(
+      http.post(
+        '/auth/register',
+        withCaptchaPayload(
+          {
+            email: payload.email,
+            emailCode: payload.emailCode,
+            password: payload.password,
+            confirmPassword: payload.confirmPassword,
+            inviteCode: payload.inviteCode,
+          },
+          payload.captchaData,
         ),
-      async () => ({
-        ...demoAuthResult,
-        user: {
-          ...demoAuthResult.user,
-          email: payload.email,
-          role: 'USER' as const,
-        },
-      }),
+      ),
     )
   },
 
-  async sendRegisterCode(payload: {
-    email: string
-    captchaData: GeetestValidateResult
-  }) {
-    return withDemoFallback(
-      () =>
-        unwrap<{ expireSeconds: number; nextSendAfterSeconds: number }>(
-          http.post(
-            '/auth/register/email-code/send',
-            withCaptchaPayload(
-              {
-                email: payload.email,
-              },
-              payload.captchaData,
-            ),
-          ),
+  async sendRegisterCode(payload: SendEmailCodeRequest) {
+    return unwrap<SendRegisterCodeResponse>(
+      http.post(
+        '/auth/register/email-code/send',
+        withCaptchaPayload(
+          {
+            email: payload.email,
+          },
+          payload.captchaData,
         ),
-      async () => ({ expireSeconds: 180, nextSendAfterSeconds: 60 }),
+      ),
     )
   },
 
-  async sendResetCode(payload: {
-    email: string
-    captchaData: GeetestValidateResult
-  }) {
-    return withDemoFallback(
-      () =>
-        unwrap<void>(
-          http.post(
-            '/auth/password-reset/email-code/send',
-            withCaptchaPayload(
-              {
-                email: payload.email,
-              },
-              payload.captchaData,
-            ),
-          ),
+  async sendResetCode(payload: SendEmailCodeRequest) {
+    return unwrap<void>(
+      http.post(
+        '/auth/password-reset/email-code/send',
+        withCaptchaPayload(
+          {
+            email: payload.email,
+          },
+          payload.captchaData,
         ),
-      async () => undefined,
+      ),
     )
   },
 
-  async resetPassword(payload: {
-    email: string
-    emailCode: string
-    newPassword: string
-    confirmPassword: string
-  }) {
-    return withDemoFallback(
-      () => unwrap<void>(http.post('/auth/password-reset/confirm', payload)),
-      async () => undefined,
-    )
+  async resetPassword(payload: ResetPasswordRequest) {
+    return unwrap<void>(http.post('/auth/password-reset/confirm', payload))
+  },
+
+  async refresh(refreshToken: string) {
+    const payload: RefreshTokenRequest = { refreshToken }
+    return unwrap<AuthResult>(refreshHttp.post('/auth/refresh', payload))
   },
 
   async me() {
-    return withDemoFallback(
-      () => unwrap<UserProfile>(http.get('/auth/me')),
-      async () => demoAuthResult.user,
-    )
+    return unwrap<UserProfile>(http.get('/auth/me'))
   },
 
-  async changePassword(payload: {
-    oldPassword: string
-    newPassword: string
-    confirmPassword: string
-  }) {
-    return withDemoFallback(
-      () => unwrap<void>(http.post('/auth/password/change', payload)),
-      async () => undefined,
-    )
+  async changePassword(payload: ChangePasswordRequest) {
+    return unwrap<void>(http.post('/auth/password/change', payload))
   },
 
   async logout() {
-    return withDemoFallback(
-      () => unwrap<void>(http.post('/auth/logout')),
-      async () => undefined,
-    )
+    return unwrap<void>(http.post('/auth/logout'))
   },
 }
 
 export const fileApi = {
   async listFiles(filters: FileFilters) {
-    return withDemoFallback(
-      () => unwrap<PagedResult<FileListItem>>(http.get('/files', { params: filters })),
-      async () => toPagedResult(filterFiles(filters), filters.pageNo, filters.pageSize),
-    )
+    return unwrap<PagedResult<FileListItem>>(http.get('/files', { params: filters }))
   },
 
   async getFileDetail(fileId: number) {
-    return withDemoFallback(
-      () => unwrap<FileDetail>(http.get(`/files/${fileId}`)),
-      async () => getDemoFileDetail(fileId),
-    )
+    return unwrap<FileDetail>(http.get(`/files/${fileId}`))
   },
 
   async getCategories() {
-    return withDemoFallback(
-      () => unwrap<FileCategory[]>(http.get('/file-categories')),
-      async () => demoCategories,
-    )
+    return unwrap<FileCategory[]>(http.get('/file-categories'))
   },
 
   async upload(formData: FormData) {
-    return withDemoFallback(
-      () => unwrap<{ fileId: number; taskId: number; taskNo: string; taskStatus: string }>(http.post('/admin/files/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } })),
-      async () => ({
-        fileId: 1004,
-        taskId: 8003,
-        taskNo: 'GEN-20260517-0010',
-        taskStatus: 'PROCESSING',
-      }),
+    return unwrap<UploadFileResponse>(
+      http.post('/admin/files/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
     )
   },
 
   async deleteFile(fileId: number, confirmText: string) {
-    return withDemoFallback(
-      () => unwrap<void>(http.delete(`/admin/files/${fileId}`, { data: { confirmText } })),
-      async () => undefined,
-    )
+    const payload: DeleteFileRequest = { confirmText }
+    return unwrap<void>(http.delete(`/admin/files/${fileId}`, { data: payload }))
   },
 
   async previewSource(fileId: number) {
-    return withDemoFallback(
-      () => unwrap<PreviewInfo>(http.get(`/files/${fileId}/preview-source`)),
-      async () => {
-        const detail = getDemoFileDetail(fileId)
-        if (detail.previewRecord.previewMode === 'CONVERT_TO_PDF' && detail.previewRecord.previewStatus === 'PROCESSING') {
-          return {
-            fileId,
-            previewMode: 'CONVERT_TO_PDF' as const,
-            previewStatus: 'PROCESSING' as const,
-            previewUrl: null,
-            expireAt: null,
-            renderType: 'PDF_SCROLL' as const,
-            downloadUrl: `/api/v1/files/${fileId}/download-source`,
-            message: '预览文件正在生成中，请稍后刷新',
-          }
-        }
-
-        const renderType: PreviewInfo['renderType'] =
-          detail.sourceFileType === 'text/markdown' ? 'MARKDOWN_RENDER' : 'PDF_SCROLL'
-
-        return {
-          fileId,
-          previewMode: detail.previewRecord.previewMode,
-          previewStatus: 'SUCCESS' as const,
-          previewUrl: detail.previewRecord.previewObjectUrl,
-          expireAt: '2026-05-17 22:00:00.000',
-          renderType,
-          downloadUrl: `/api/v1/files/${fileId}/download-source`,
-        }
-      },
-    )
+    return unwrap<PreviewInfo>(http.get(`/files/${fileId}/preview-source`))
   },
 
   async previewResult(fileId: number, itemType: TaskItemType) {
-    return withDemoFallback(
-      () => unwrap<PreviewInfo>(http.get(`/files/${fileId}/preview-result`, { params: { itemType } })),
-      async () => {
-        const item = getDemoFileDetail(fileId).generateRecord.items.find((entry) => entry.itemType === itemType)
-        return {
-          fileId,
-          itemType,
-          itemStatus: item?.itemStatus ?? 'FAIL',
-          previewUrl: item?.resultObjectUrl ?? null,
-          expireAt: item?.resultObjectUrl ? '2026-05-17 22:00:00.000' : null,
-        }
-      },
-    )
+    return unwrap<PreviewInfo>(http.get(`/files/${fileId}/preview-result`, { params: { itemType } }))
+  },
+
+  async previewResultHtml(fileId: number, itemType: TaskItemType) {
+    const response = await http.get<string>(`/files/${fileId}/view-result`, {
+      params: { itemType },
+      responseType: 'text',
+    })
+    return response.data
   },
 
   async downloadSource(fileId: number) {
-    return withDemoFallback(
-      () => unwrap<{ url: string; expireAt: string }>(http.get(`/files/${fileId}/download-source`)),
-      async () => ({ url: 'https://example.com/download/source', expireAt: '2026-05-17 22:00:00.000' }),
-    )
+    return unwrap<SignedUrlResponse>(http.get(`/files/${fileId}/download-source`))
   },
 
   async downloadResult(fileId: number, itemType: TaskItemType) {
-    return withDemoFallback(
-      () => unwrap<{ url: string; expireAt: string }>(http.get(`/files/${fileId}/download-result`, { params: { itemType } })),
-      async () => ({ url: `https://example.com/download/${fileId}/${itemType.toLowerCase()}.html`, expireAt: '2026-05-17 22:00:00.000' }),
-    )
+    return unwrap<SignedUrlResponse>(http.get(`/files/${fileId}/download-result`, { params: { itemType } }))
   },
 }
 
 export const taskApi = {
   async listTasks(filters: TaskFilters) {
-    return withDemoFallback(
-      () => unwrap<PagedResult<TaskRecord>>(http.get('/tasks', { params: filters })),
-      async () => toPagedResult(filterTasks(filters), filters.pageNo, filters.pageSize),
-    )
+    return unwrap<PagedResult<TaskRecord>>(http.get('/tasks', { params: filters }))
   },
 
   async getTask(taskId: number) {
-    return withDemoFallback(
-      () => unwrap<TaskRecord>(http.get(`/tasks/${taskId}`)),
-      async () => getDemoTask(taskId),
-    )
+    return unwrap<TaskRecord>(http.get(`/tasks/${taskId}`))
   },
 
-  async retryTaskItem(taskId: number, taskItemId: number) {
-    return withDemoFallback(
-      () => unwrap<void>(http.post(`/admin/tasks/${taskId}/items/${taskItemId}/retry`)),
-      async () => undefined,
-    )
+  async retryTaskItem(params: RetryTaskItemParams) {
+    return unwrap<void>(http.post(`/admin/tasks/${params.taskId}/items/${params.taskItemId}/retry`))
   },
 }
 
 export const notificationApi = {
   async listNotifications(filters: NotificationFilters) {
-    return withDemoFallback(
-      () => unwrap<PagedResult<NotificationRecord>>(http.get('/notifications', { params: filters })),
-      async () => toPagedResult(filterNotifications(filters), filters.pageNo, filters.pageSize),
-    )
+    return unwrap<PagedResult<NotificationRecord>>(http.get('/notifications', { params: filters }))
   },
 
   async getNotification(notificationId: number) {
-    return withDemoFallback(
-      () => unwrap<NotificationRecord>(http.get(`/notifications/${notificationId}`)),
-      async () => ({ ...getDemoNotification(notificationId), status: 'READ' }),
-    )
+    return unwrap<NotificationRecord>(http.get(`/notifications/${notificationId}`))
   },
 
   async markRead(notificationId: number) {
-    return withDemoFallback(
-      () => unwrap<void>(http.post(`/notifications/${notificationId}/read`)),
-      async () => undefined,
-    )
+    return unwrap<void>(http.post(`/notifications/${notificationId}/read`))
   },
 
   async markBatchRead(notificationIds: number[]) {
-    return withDemoFallback(
-      () => unwrap<void>(http.post('/notifications/read/batch', { notificationIds })),
-      async () => undefined,
-    )
+    const payload: MarkNotificationReadBatchRequest = { notificationIds }
+    return unwrap<void>(http.post('/notifications/read/batch', payload))
   },
 
   async unreadCount() {
-    return withDemoFallback(
-      () => unwrap<{ unreadCount: number }>(http.get('/notifications/unread-count')),
-      async () => ({ unreadCount: demoNotifications.filter((item) => item.status === 'UNREAD').length }),
-    )
+    return unwrap<UnreadCountResponse>(http.get('/notifications/unread-count'))
   },
 }
 
 export const adminApi = {
   async listUsers(filters: UserFilters) {
-    return withDemoFallback(
-      () => unwrap<PagedResult<UserProfile>>(http.get('/admin/users', { params: filters })),
-      async () => toPagedResult(filterUsers(filters), filters.pageNo, filters.pageSize),
-    )
+    return unwrap<PagedResult<UserProfile>>(http.get('/admin/users', { params: filters }))
   },
 
   async enableUser(userId: number) {
-    return withDemoFallback(
-      () => unwrap<void>(http.post(`/admin/users/${userId}/enable`)),
-      async () => undefined,
-    )
+    return unwrap<void>(http.post(`/admin/users/${userId}/enable`))
   },
 
   async disableUser(userId: number, remark: string) {
-    return withDemoFallback(
-      () => unwrap<void>(http.post(`/admin/users/${userId}/disable`, { remark })),
-      async () => undefined,
-    )
+    const payload: DisableUserRequest = { remark }
+    return unwrap<void>(http.post(`/admin/users/${userId}/disable`, payload))
   },
 
   async listAdminFiles(filters: FileFilters) {
-    return withDemoFallback(
-      () => unwrap<PagedResult<FileListItem>>(http.get('/admin/files', { params: filters })),
-      async () => toPagedResult(filterFiles(filters), filters.pageNo, filters.pageSize),
-    )
+    return unwrap<PagedResult<FileListItem>>(http.get('/admin/files', { params: filters }))
+  },
+
+  async retryPreviewConversion(fileId: number) {
+    return unwrap<void>(http.post(`/admin/files/${fileId}/preview-conversion/retry`))
   },
 
   async listInviteCodes(filters: InviteCodeFilters) {
-    return withDemoFallback(
-      () => unwrap<PagedResult<InviteCodeRecord>>(http.get('/admin/invite-codes', { params: filters })),
-      async () => toPagedResult(filterInviteCodes(filters), filters.pageNo, filters.pageSize),
-    )
+    return unwrap<PagedResult<InviteCodeRecord>>(http.get('/admin/invite-codes', { params: filters }))
   },
 
-  async createInviteCode(payload: {
-    codeType: 'CUSTOM' | 'RANDOM'
-    code?: string
-    totalQuota: number
-    remark?: string
-  }) {
-    return withDemoFallback(
-      () => unwrap<void>(http.post('/admin/invite-codes', payload)),
-      async () => undefined,
-    )
+  async createInviteCode(payload: CreateInviteCodeRequest) {
+    return unwrap<void>(http.post('/admin/invite-codes', payload))
   },
 
-  async batchGenerateInviteCodes(payload: {
-    generateCount: number
-    totalQuota: number
-    remark?: string
-    codeType: 'RANDOM'
-  }) {
-    return withDemoFallback(
-      () => unwrap<{ batchNo: string; generateCount: number; codes: InviteCodeRecord[] }>(http.post('/admin/invite-codes/batch-generate', payload)),
-      async () => ({
-        batchNo: 'INV-20260517-0099',
-        generateCount: payload.generateCount,
-        codes: demoInviteCodes,
-      }),
+  async batchGenerateInviteCodes(payload: BatchGenerateInviteCodesRequest) {
+    return unwrap<BatchGenerateInviteCodesResponse>(
+      http.post('/admin/invite-codes/batch-generate', payload),
     )
   },
 
   async updateInviteRemark(inviteCodeId: number, remark: string) {
-    return withDemoFallback(
-      () => unwrap<void>(http.put(`/admin/invite-codes/${inviteCodeId}/remark`, { remark })),
-      async () => undefined,
-    )
+    const payload: UpdateInviteRemarkRequest = { remark }
+    return unwrap<void>(http.put(`/admin/invite-codes/${inviteCodeId}/remark`, payload))
   },
 
   async deleteInviteCode(inviteCodeId: number) {
-    return withDemoFallback(
-      () => unwrap<void>(http.delete(`/admin/invite-codes/${inviteCodeId}`)),
-      async () => undefined,
-    )
+    return unwrap<void>(http.delete(`/admin/invite-codes/${inviteCodeId}`))
   },
 
-  async createCategory(payload: { name: string; sortNo: number }) {
-    return withDemoFallback(
-      () => unwrap<void>(http.post('/admin/file-categories', payload)),
-      async () => undefined,
-    )
+  async createCategory(payload: CreateCategoryRequest) {
+    return unwrap<void>(http.post('/admin/file-categories', payload))
   },
 
-  async updateCategory(categoryId: number, payload: { name: string; sortNo: number; status: 'ENABLED' | 'DISABLED' }) {
-    return withDemoFallback(
-      () => unwrap<void>(http.put(`/admin/file-categories/${categoryId}`, payload)),
-      async () => undefined,
-    )
+  async updateCategory(categoryId: number, payload: UpdateCategoryRequest) {
+    return unwrap<void>(http.put(`/admin/file-categories/${categoryId}`, payload))
   },
 
   async deleteCategory(categoryId: number) {
-    return withDemoFallback(
-      () => unwrap<void>(http.delete(`/admin/file-categories/${categoryId}`)),
-      async () => undefined,
-    )
+    return unwrap<void>(http.delete(`/admin/file-categories/${categoryId}`))
   },
 }

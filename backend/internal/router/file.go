@@ -13,6 +13,7 @@ func RegisterFileRoutes(r *gin.RouterGroup, c *controller.Controller, authRequir
 	r.GET("/files/:fileId/preview-source", authRequired, c.PreviewSource)
 	r.POST("/admin/files/:fileId/preview-conversion/retry", authRequired, c.RetryPreviewConversion)
 	r.GET("/files/:fileId/preview-result", authRequired, c.PreviewResult)
+	r.GET("/files/:fileId/view-result", authRequired, c.ViewResultHTML)
 	r.GET("/files/:fileId/download-source", authRequired, c.DownloadSource)
 	r.GET("/files/:fileId/download-result", authRequired, c.DownloadResult)
 }

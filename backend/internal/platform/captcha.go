@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +22,7 @@ type CaptchaPayload struct {
 	PassToken     string `json:"pass_token" form:"pass_token"`
 	GenTime       string `json:"gen_time" form:"gen_time"`
 	CaptchaID     string `json:"captcha_id" form:"captcha_id"`
+	SignToken     string `json:"sign_token" form:"sign_token"`
 }
 type CaptchaValidator interface {
 	Validate(ctx context.Context, payload CaptchaPayload) error
@@ -41,9 +44,20 @@ func (v *GeetestValidator) Validate(ctx context.Context, payload CaptchaPayload)
 	if v.cfg.CaptchaID == "" || v.cfg.PrivateKey == "" {
 		return fmt.Errorf("geetest config is incomplete")
 	}
-	mac := hmac.New(sha256.New, []byte(v.cfg.PrivateKey))
-	_, _ = mac.Write([]byte(payload.LotNumber))
-	signToken := hex.EncodeToString(mac.Sum(nil))
+	if payload.CaptchaID == "" {
+		return fmt.Errorf("missing captcha_id")
+	}
+	if payload.CaptchaID != v.cfg.CaptchaID {
+		log.Printf("[GEETEST] captcha_id mismatch request=%s config=%s", payload.CaptchaID, v.cfg.CaptchaID)
+		return fmt.Errorf("captcha_id mismatch")
+	}
+
+	signToken := payload.SignToken
+	if signToken == "" {
+		mac := hmac.New(sha256.New, []byte(v.cfg.PrivateKey))
+		_, _ = mac.Write([]byte(payload.LotNumber))
+		signToken = hex.EncodeToString(mac.Sum(nil))
+	}
 
 	form := url.Values{}
 	form.Set("lot_number", payload.LotNumber)
@@ -61,24 +75,41 @@ func (v *GeetestValidator) Validate(ctx context.Context, payload CaptchaPayload)
 
 	resp, err := v.client.Do(req)
 	if err != nil {
+		log.Printf("[GEETEST] validate request failed captcha_id=%s lot_number=%s err=%v", payload.CaptchaID, payload.LotNumber, err)
 		return fmt.Errorf("call geetest validate: %w", err)
 	}
 	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("[GEETEST] read response failed captcha_id=%s lot_number=%s err=%v", payload.CaptchaID, payload.LotNumber, err)
+		return fmt.Errorf("read geetest response: %w", err)
+	}
 
 	var result struct {
-		Status  string `json:"status"`
-		Result  string `json:"result"`
-		Captcha string `json:"captcha_args"`
-		Reason  string `json:"msg"`
+		Status      string          `json:"status"`
+		Result      string          `json:"result"`
+		CaptchaArgs json.RawMessage `json:"captcha_args"`
+		Reason      string          `json:"msg"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
+		log.Printf("[GEETEST] decode response failed captcha_id=%s lot_number=%s err=%v raw=%s", payload.CaptchaID, payload.LotNumber, err, string(body))
 		return fmt.Errorf("decode geetest response: %w", err)
 	}
 	if result.Status != "success" || result.Result != "success" {
 		if result.Reason == "" {
 			result.Reason = "captcha validation failed"
 		}
+		log.Printf("[GEETEST] validate failed captcha_id=%s lot_number=%s status=%s result=%s reason=%s captcha_args=%s has_sign_token=%t",
+			payload.CaptchaID,
+			payload.LotNumber,
+			result.Status,
+			result.Result,
+			result.Reason,
+			string(result.CaptchaArgs),
+			payload.SignToken != "",
+		)
 		return fmt.Errorf(result.Reason)
 	}
+	log.Printf("[GEETEST] validate success captcha_id=%s lot_number=%s captcha_args=%s has_sign_token=%t", payload.CaptchaID, payload.LotNumber, string(result.CaptchaArgs), payload.SignToken != "")
 	return nil
 }

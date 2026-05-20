@@ -6,8 +6,8 @@ import (
 	"final-exam-savior/backend/internal/controller"
 )
 
-func RegisterAdminRoutes(r *gin.RouterGroup, c *controller.Controller, authRequired gin.HandlerFunc) {
-	admin := r.Group("/admin", authRequired)
+func RegisterAdminRoutes(r *gin.RouterGroup, c *controller.Controller, adminRequired gin.HandlerFunc) {
+	admin := r.Group("/admin", adminRequired)
 	{
 		admin.POST("/invite-codes", c.CreateInviteCode)
 		admin.POST("/invite-codes/batch-generate", c.BatchGenerateInviteCodes)

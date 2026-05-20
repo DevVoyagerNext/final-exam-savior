@@ -59,9 +59,10 @@ type StorageConfig struct {
 }
 
 type AuthConfig struct {
-	JWTSecret string        `mapstructure:"jwt_secret"`
-	Issuer    string        `mapstructure:"issuer"`
-	TokenTTL  time.Duration `mapstructure:"token_ttl"`
+	JWTSecret       string        `mapstructure:"jwt_secret"`
+	Issuer          string        `mapstructure:"issuer"`
+	AccessTokenTTL  time.Duration `mapstructure:"access_token_ttl"`
+	RefreshTokenTTL time.Duration `mapstructure:"refresh_token_ttl"`
 }
 
 type SMTPConfig struct {
@@ -172,7 +173,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("storage.public_base_url", "http://127.0.0.1:8080/storage/local")
 
 	v.SetDefault("auth.issuer", "final-exam-savior")
-	v.SetDefault("auth.token_ttl", 7*24*time.Hour)
+	v.SetDefault("auth.access_token_ttl", 2*time.Hour)
+	v.SetDefault("auth.refresh_token_ttl", 30*24*time.Hour)
 
 	v.SetDefault("smtp.port", 587)
 	v.SetDefault("smtp.from", "")
@@ -216,7 +218,14 @@ func applyRuntimeValues(v *viper.Viper, cfg Config) Config {
 
 	cfg.Auth.JWTSecret = firstNonEmpty(os.Getenv("APP_AUTH_JWT_SECRET"), v.GetString("auth.jwt_secret"))
 	cfg.Auth.Issuer = v.GetString("auth.issuer")
-	cfg.Auth.TokenTTL = v.GetDuration("auth.token_ttl")
+	cfg.Auth.AccessTokenTTL = v.GetDuration("auth.access_token_ttl")
+	cfg.Auth.RefreshTokenTTL = v.GetDuration("auth.refresh_token_ttl")
+	if cfg.Auth.AccessTokenTTL <= 0 {
+		cfg.Auth.AccessTokenTTL = v.GetDuration("auth.token_ttl")
+	}
+	if cfg.Auth.RefreshTokenTTL <= 0 {
+		cfg.Auth.RefreshTokenTTL = 30 * 24 * time.Hour
+	}
 
 	cfg.SMTP.Host = firstNonEmpty(os.Getenv("APP_SMTP_HOST"), v.GetString("smtp.host"))
 	cfg.SMTP.Port = v.GetInt("smtp.port")

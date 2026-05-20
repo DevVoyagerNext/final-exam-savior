@@ -56,7 +56,7 @@ func (s *Service) DisableUser(ctx context.Context, current *CurrentUser, id uint
 	if current.User.Role != "ADMIN" {
 		return newError(http.StatusForbidden, codeForbidden, "无权限", nil)
 	}
-	return normalizeErr(s.dao.Gorm().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := normalizeErr(s.dao.Gorm().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
 		if err := tx.Model(&model.User{}).Where("id = ?", id).Updates(map[string]any{
 			"status":      "DISABLED",
@@ -66,14 +66,9 @@ func (s *Service) DisableUser(ctx context.Context, current *CurrentUser, id uint
 		}).Error; err != nil {
 			return fmt.Errorf("disable user: %w", err)
 		}
-		reason := "ACCOUNT_DISABLED"
-		if err := tx.Model(&model.UserSession{}).Where("user_id = ? AND status = ?", id, "ACTIVE").Updates(map[string]any{
-			"status":         "INVALIDATED",
-			"invalidated_at": now,
-			"invalid_reason": reason,
-		}).Error; err != nil {
-			return fmt.Errorf("invalidate user sessions: %w", err)
-		}
 		return nil
-	}))
+	})); err != nil {
+		return err
+	}
+	return s.revokeAllRefreshTokens(ctx, id)
 }

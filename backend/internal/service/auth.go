@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -20,31 +21,34 @@ import (
 	"final-exam-savior/backend/internal/platform"
 )
 
-func (s *Service) ValidateSession(ctx context.Context, tokenString string) (*CurrentUser, error) {
-	claims := jwt.MapClaims{}
-	token, err := jwt.ParseWithClaims(tokenString, claims, func(_ *jwt.Token) (any, error) {
-		return []byte(s.cfg.Auth.JWTSecret), nil
-	})
-	if err != nil || !token.Valid {
+const (
+	tokenTypeAccess  = "access"
+	tokenTypeRefresh = "refresh"
+)
+
+func (s *Service) ValidateAccessToken(ctx context.Context, tokenString string) (*CurrentUser, error) {
+	claims, err := s.parseAndValidateJWT(tokenString, tokenTypeAccess)
+	if err != nil {
+		return nil, err
+	}
+	userID, err := parseUserID(claims.Subject)
+	if err != nil {
 		return nil, newError(http.StatusUnauthorized, codeUnauthorized, "登录态无效", err)
 	}
-	jti, _ := claims["jti"].(string)
-	sub, _ := claims["sub"].(string)
-	if jti == "" || sub == "" {
-		return nil, newError(http.StatusUnauthorized, codeUnauthorized, "登录态无效", nil)
-	}
-
-	var session model.UserSession
-	if err := s.dao.Gorm().WithContext(ctx).
-		Where("session_token = ? AND status = ? AND expires_at > ?", jti, "ACTIVE", time.Now()).
-		First(&session).Error; err != nil {
-		return nil, newError(http.StatusUnauthorized, codeUnauthorized, "登录态已失效", err)
-	}
 	var user model.User
-	if err := s.dao.Gorm().WithContext(ctx).First(&user, session.UserID).Error; err != nil {
+	if err := s.dao.Gorm().WithContext(ctx).First(&user, userID).Error; err != nil {
 		return nil, newError(http.StatusUnauthorized, codeUnauthorized, "用户不存在", err)
 	}
-	return &CurrentUser{User: user, Session: session}, nil
+	if user.Status != "ENABLED" {
+		return nil, newError(http.StatusForbidden, codeForbidden, "账号已被禁用", nil)
+	}
+	user.Email = claims.Email
+	user.Role = claims.Role
+	return &CurrentUser{
+		User:      user,
+		TokenID:   claims.TokenID,
+		TokenType: claims.TokenType,
+	}, nil
 }
 
 func (s *Service) SendRegisterCode(ctx context.Context, email string, captcha platform.CaptchaPayload) (map[string]any, error) {
@@ -109,7 +113,7 @@ func (s *Service) Register(ctx context.Context, req request.RegisterRequest) (ma
 		return nil, err
 	}
 
-	var result map[string]any
+	var user model.User
 	err := s.dao.Gorm().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var exists int64
 		if err := tx.Model(&model.User{}).Where("email = ?", email).Count(&exists).Error; err != nil {
@@ -135,7 +139,7 @@ func (s *Service) Register(ctx context.Context, req request.RegisterRequest) (ma
 		}
 
 		now := time.Now()
-		user := model.User{
+		user = model.User{
 			Email:        email,
 			PasswordHash: string(hash),
 			Role:         "USER",
@@ -154,17 +158,12 @@ func (s *Service) Register(ctx context.Context, req request.RegisterRequest) (ma
 			return fmt.Errorf("decrease invite quota: %w", err)
 		}
 
-		tokenData, err := s.createSessionToken(ctx, tx, user, "", "")
-		if err != nil {
-			return err
-		}
-		result = tokenData
 		return nil
 	})
 	if err != nil {
 		return nil, normalizeErr(err)
 	}
-	return result, nil
+	return s.createTokenPair(ctx, user)
 }
 
 func (s *Service) Login(ctx context.Context, req request.LoginRequest, loginIP string, userAgent string) (map[string]any, error) {
@@ -192,38 +191,15 @@ func (s *Service) Login(ctx context.Context, req request.LoginRequest, loginIP s
 		return nil, err
 	}
 
-	var result map[string]any
-	err := s.dao.Gorm().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		now := time.Now()
-		if err := tx.Model(&model.User{}).Where("id = ?", user.ID).Update("last_login_at", now).Error; err != nil {
-			return fmt.Errorf("update last login: %w", err)
-		}
-		tokenData, err := s.createSessionToken(ctx, tx, user, loginIP, userAgent)
-		if err != nil {
-			return err
-		}
-		result = tokenData
-		return nil
-	})
-	if err != nil {
-		return nil, normalizeErr(err)
+	now := time.Now()
+	if err := s.dao.Gorm().WithContext(ctx).Model(&model.User{}).Where("id = ?", user.ID).Update("last_login_at", now).Error; err != nil {
+		return nil, newError(http.StatusInternalServerError, codeInternal, "更新登录时间失败", err)
 	}
-	return result, nil
+	return s.createTokenPair(ctx, user)
 }
 
 func (s *Service) Logout(ctx context.Context, current *CurrentUser) error {
-	now := time.Now()
-	reason := "LOGOUT"
-	if err := s.dao.Gorm().WithContext(ctx).Model(&model.UserSession{}).
-		Where("id = ? AND status = ?", current.Session.ID, "ACTIVE").
-		Updates(map[string]any{
-			"status":         "INVALIDATED",
-			"invalidated_at": now,
-			"invalid_reason": reason,
-		}).Error; err != nil {
-		return newError(http.StatusInternalServerError, codeInternal, "退出登录失败", err)
-	}
-	return nil
+	return s.revokeAllRefreshTokens(ctx, current.User.ID)
 }
 
 func (s *Service) Me(_ context.Context, current *CurrentUser) map[string]any {
@@ -240,14 +216,18 @@ func (s *Service) ChangePassword(ctx context.Context, current *CurrentUser, req 
 	if err := validatePasswordPair(req.NewPassword, req.ConfirmPassword); err != nil {
 		return err
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(current.User.PasswordHash), []byte(req.OldPassword)); err != nil {
+	var user model.User
+	if err := s.dao.Gorm().WithContext(ctx).First(&user, current.User.ID).Error; err != nil {
+		return newError(http.StatusNotFound, codeNotFound, "用户不存在", err)
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.OldPassword)); err != nil {
 		return newError(http.StatusBadRequest, codeBusiness, "旧密码错误", err)
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 	if err != nil {
 		return newError(http.StatusInternalServerError, codeInternal, "密码加密失败", err)
 	}
-	return normalizeErr(s.invalidateAllSessionsAndUpdatePassword(ctx, current.User.ID, string(hash), "CHANGE_PASSWORD"))
+	return normalizeErr(s.invalidateAllRefreshTokensAndUpdatePassword(ctx, current.User.ID, string(hash)))
 }
 
 func (s *Service) ResetPassword(ctx context.Context, req request.ResetPasswordRequest) error {
@@ -267,57 +247,78 @@ func (s *Service) ResetPassword(ctx context.Context, req request.ResetPasswordRe
 	if err := s.dao.Gorm().WithContext(ctx).Where("email = ?", email).First(&user).Error; err != nil {
 		return newError(http.StatusNotFound, codeNotFound, "用户不存在", err)
 	}
-	return normalizeErr(s.invalidateAllSessionsAndUpdatePassword(ctx, user.ID, string(hash), "RESET_PASSWORD"))
+	return normalizeErr(s.invalidateAllRefreshTokensAndUpdatePassword(ctx, user.ID, string(hash)))
 }
 
-func (s *Service) invalidateAllSessionsAndUpdatePassword(ctx context.Context, userID uint64, hash string, reason string) error {
-	return s.dao.Gorm().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (map[string]any, error) {
+	claims, err := s.parseAndValidateJWT(refreshToken, tokenTypeRefresh)
+	if err != nil {
+		return nil, err
+	}
+	userID, err := parseUserID(claims.Subject)
+	if err != nil {
+		return nil, newError(http.StatusUnauthorized, codeUnauthorized, "刷新令牌无效", err)
+	}
+	stored, err := s.dao.Redis().Get(ctx, s.refreshTokenKey(claims.TokenID)).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, newError(http.StatusUnauthorized, codeUnauthorized, "刷新令牌已失效", err)
+		}
+		return nil, newError(http.StatusInternalServerError, codeInternal, "读取刷新令牌失败", err)
+	}
+	if stored != refreshToken {
+		return nil, newError(http.StatusUnauthorized, codeUnauthorized, "刷新令牌无效", nil)
+	}
+	var user model.User
+	if err := s.dao.Gorm().WithContext(ctx).First(&user, userID).Error; err != nil {
+		return nil, newError(http.StatusUnauthorized, codeUnauthorized, "用户不存在", err)
+	}
+	if user.Status != "ENABLED" {
+		return nil, newError(http.StatusForbidden, codeForbidden, "账号已被禁用", nil)
+	}
+	if err := s.revokeRefreshToken(ctx, userID, claims.TokenID); err != nil {
+		return nil, err
+	}
+	return s.createTokenPair(ctx, user)
+}
+
+func (s *Service) invalidateAllRefreshTokensAndUpdatePassword(ctx context.Context, userID uint64, hash string) error {
+	if err := s.dao.Gorm().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&model.User{}).Where("id = ?", userID).Update("password_hash", hash).Error; err != nil {
 			return fmt.Errorf("update password: %w", err)
 		}
-		now := time.Now()
-		if err := tx.Model(&model.UserSession{}).
-			Where("user_id = ? AND status = ?", userID, "ACTIVE").
-			Updates(map[string]any{
-				"status":         "INVALIDATED",
-				"invalidated_at": now,
-				"invalid_reason": reason,
-			}).Error; err != nil {
-			return fmt.Errorf("invalidate sessions: %w", err)
-		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	return s.revokeAllRefreshTokens(ctx, userID)
 }
 
-func (s *Service) createSessionToken(ctx context.Context, tx *gorm.DB, user model.User, loginIP, userAgent string) (map[string]any, error) {
-	sessionID := uuid.NewString()
-	expireAt := time.Now().Add(s.cfg.Auth.TokenTTL)
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub":  fmt.Sprintf("%d", user.ID),
-		"jti":  sessionID,
-		"role": user.Role,
-		"exp":  expireAt.Unix(),
-		"iss":  s.cfg.Auth.Issuer,
-	})
-	signed, err := token.SignedString([]byte(s.cfg.Auth.JWTSecret))
+func (s *Service) createTokenPair(ctx context.Context, user model.User) (map[string]any, error) {
+	now := time.Now()
+	accessExpireAt := now.Add(s.cfg.Auth.AccessTokenTTL)
+	refreshExpireAt := now.Add(s.cfg.Auth.RefreshTokenTTL)
+	accessTokenID := uuid.NewString()
+	refreshTokenID := uuid.NewString()
+
+	accessToken, err := s.signAuthToken(user, tokenTypeAccess, accessTokenID, accessExpireAt)
 	if err != nil {
-		return nil, newError(http.StatusInternalServerError, codeInternal, "签发登录态失败", err)
+		return nil, err
 	}
-	session := model.UserSession{
-		UserID:       user.ID,
-		SessionToken: sessionID,
-		Status:       "ACTIVE",
-		IssuedAt:     time.Now(),
-		ExpiresAt:    expireAt,
-		LoginIP:      optionalString(loginIP),
-		UserAgent:    optionalString(userAgent),
+	refreshToken, err := s.signAuthToken(user, tokenTypeRefresh, refreshTokenID, refreshExpireAt)
+	if err != nil {
+		return nil, err
 	}
-	if err := tx.WithContext(ctx).Create(&session).Error; err != nil {
-		return nil, fmt.Errorf("create session: %w", err)
+	if err := s.storeRefreshToken(ctx, user.ID, refreshTokenID, refreshToken, time.Until(refreshExpireAt)); err != nil {
+		return nil, err
 	}
 	return map[string]any{
-		"token":    signed,
-		"expireAt": formatTime(expireAt),
+		"token":           accessToken,
+		"expireAt":        formatTime(accessExpireAt),
+		"accessToken":     accessToken,
+		"accessExpireAt":  formatTime(accessExpireAt),
+		"refreshToken":    refreshToken,
+		"refreshExpireAt": formatTime(refreshExpireAt),
 		"user": map[string]any{
 			"id":     user.ID,
 			"email":  user.Email,
@@ -325,6 +326,97 @@ func (s *Service) createSessionToken(ctx context.Context, tx *gorm.DB, user mode
 			"status": user.Status,
 		},
 	}, nil
+}
+
+func (s *Service) signAuthToken(user model.User, tokenType string, tokenID string, expireAt time.Time) (string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, AuthClaims{
+		Email:     user.Email,
+		Role:      user.Role,
+		Status:    user.Status,
+		TokenType: tokenType,
+		TokenID:   tokenID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   fmt.Sprintf("%d", user.ID),
+			Issuer:    s.cfg.Auth.Issuer,
+			ExpiresAt: jwt.NewNumericDate(expireAt),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ID:        tokenID,
+		},
+	})
+	signed, err := token.SignedString([]byte(s.cfg.Auth.JWTSecret))
+	if err != nil {
+		return "", newError(http.StatusInternalServerError, codeInternal, "签发登录态失败", err)
+	}
+	return signed, nil
+}
+
+func (s *Service) parseAndValidateJWT(tokenString string, expectedType string) (*AuthClaims, error) {
+	claims := &AuthClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (any, error) {
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(s.cfg.Auth.JWTSecret), nil
+	})
+	if err != nil || !token.Valid {
+		return nil, newError(http.StatusUnauthorized, codeUnauthorized, "登录态无效", err)
+	}
+	if claims.TokenType != expectedType || claims.TokenID == "" || claims.Subject == "" {
+		return nil, newError(http.StatusUnauthorized, codeUnauthorized, "登录态无效", nil)
+	}
+	if claims.Issuer != s.cfg.Auth.Issuer {
+		return nil, newError(http.StatusUnauthorized, codeUnauthorized, "登录态无效", nil)
+	}
+	return claims, nil
+}
+
+func (s *Service) storeRefreshToken(ctx context.Context, userID uint64, tokenID string, refreshToken string, ttl time.Duration) error {
+	pipe := s.dao.Redis().TxPipeline()
+	pipe.Set(ctx, s.refreshTokenKey(tokenID), refreshToken, ttl)
+	pipe.SAdd(ctx, s.userRefreshSetKey(userID), tokenID)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return newError(http.StatusInternalServerError, codeInternal, "保存刷新令牌失败", err)
+	}
+	return nil
+}
+
+func (s *Service) revokeRefreshToken(ctx context.Context, userID uint64, tokenID string) error {
+	pipe := s.dao.Redis().TxPipeline()
+	pipe.Del(ctx, s.refreshTokenKey(tokenID))
+	pipe.SRem(ctx, s.userRefreshSetKey(userID), tokenID)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return newError(http.StatusInternalServerError, codeInternal, "撤销刷新令牌失败", err)
+	}
+	return nil
+}
+
+func (s *Service) revokeAllRefreshTokens(ctx context.Context, userID uint64) error {
+	setKey := s.userRefreshSetKey(userID)
+	tokenIDs, err := s.dao.Redis().SMembers(ctx, setKey).Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return newError(http.StatusInternalServerError, codeInternal, "读取刷新令牌失败", err)
+	}
+	pipe := s.dao.Redis().TxPipeline()
+	for _, tokenID := range tokenIDs {
+		pipe.Del(ctx, s.refreshTokenKey(tokenID))
+	}
+	pipe.Del(ctx, setKey)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return newError(http.StatusInternalServerError, codeInternal, "撤销刷新令牌失败", err)
+	}
+	return nil
+}
+
+func (s *Service) refreshTokenKey(tokenID string) string {
+	return fmt.Sprintf("auth:refresh:token:%s", tokenID)
+}
+
+func (s *Service) userRefreshSetKey(userID uint64) string {
+	return fmt.Sprintf("auth:refresh:user:%d", userID)
+}
+
+func parseUserID(subject string) (uint64, error) {
+	return strconv.ParseUint(subject, 10, 64)
 }
 
 func (s *Service) checkAndIncreaseSendLimit(ctx context.Context, email string) error {

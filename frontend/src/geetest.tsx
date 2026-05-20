@@ -1,8 +1,8 @@
-import { Button, Typography } from 'antd'
+import { Typography } from 'antd'
 import { CheckCircleFilled, LoadingOutlined } from '@ant-design/icons'
 import { useEffect, useId, useMemo, useState } from 'react'
 
-import { ENABLE_DEMO_MODE, GEETEST_CAPTCHA_ID, GEETEST_SCRIPT_URL } from './config.ts'
+import { GEETEST_CAPTCHA_ID, GEETEST_SCRIPT_URL } from './config.ts'
 import type { GeetestValidateResult } from './types.ts'
 
 interface GeetestInstance {
@@ -13,6 +13,7 @@ interface GeetestInstance {
         captcha_output: string
         pass_token: string
         gen_time: string
+        sign_token: string
       }
     | undefined
   reset?: () => void
@@ -60,16 +61,6 @@ function ensureGeetestScript() {
   })
 }
 
-function createMockResult(): GeetestValidateResult {
-  return {
-    lot_number: `demo-lot-${Date.now()}`,
-    captcha_output: 'demo-captcha-output',
-    pass_token: 'demo-pass-token',
-    gen_time: `${Date.now()}`,
-    captcha_id: GEETEST_CAPTCHA_ID || 'demo-captcha-id',
-  }
-}
-
 export function GeetestCaptchaPanel(props: {
   sceneLabel: string
   value: GeetestValidateResult | null
@@ -78,12 +69,10 @@ export function GeetestCaptchaPanel(props: {
   const { onChange, value } = props
   const rawId = useId()
   const containerId = useMemo(() => `gt4-${rawId.replace(/[:]/g, '')}`, [rawId])
-  const [status, setStatus] = useState<'initializing' | 'ready' | 'success' | 'error' | 'mock'>(
-    GEETEST_CAPTCHA_ID ? 'initializing' : ENABLE_DEMO_MODE ? 'mock' : 'error',
+  const [status, setStatus] = useState<'initializing' | 'ready' | 'success' | 'error'>(
+    GEETEST_CAPTCHA_ID ? 'initializing' : 'error',
   )
-  const [errorText, setErrorText] = useState(
-    GEETEST_CAPTCHA_ID || ENABLE_DEMO_MODE ? '' : '未配置 VITE_GEETEST_CAPTCHA_ID，无法初始化极验 GT4。',
-  )
+  const [errorText, setErrorText] = useState(GEETEST_CAPTCHA_ID ? '' : '未配置 VITE_GEETEST_CAPTCHA_ID，无法初始化极验 GT4。')
 
   useEffect(() => {
     onChange(null)
@@ -141,12 +130,8 @@ export function GeetestCaptchaPanel(props: {
       })
       .catch((error: Error) => {
         if (!destroyed) {
-          if (ENABLE_DEMO_MODE) {
-            setStatus('mock')
-          } else {
-            setStatus('error')
-            setErrorText(error.message)
-          }
+          setStatus('error')
+          setErrorText(error.message)
         }
       })
 
@@ -176,7 +161,6 @@ export function GeetestCaptchaPanel(props: {
           ) : null}
           {status === 'error' ? <span>暂时不可用</span> : null}
           {status === 'ready' ? <span>请完成验证</span> : null}
-          {status === 'mock' ? <span>开发模式</span> : null}
         </div>
       </div>
 
@@ -184,12 +168,6 @@ export function GeetestCaptchaPanel(props: {
 
       {status === 'error' ? (
         <Typography.Text type="danger">{errorText || '安全验证加载失败，请刷新页面后重试。'}</Typography.Text>
-      ) : null}
-
-      {status === 'mock' ? (
-        <Button size="small" type="dashed" onClick={() => onChange(createMockResult())}>
-          继续调试
-        </Button>
       ) : null}
     </div>
   )

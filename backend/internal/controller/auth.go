@@ -79,6 +79,19 @@ func (ctl *Controller) Login(c *gin.Context) {
 	}
 	ctl.ok(c, data)
 }
+func (ctl *Controller) RefreshToken(c *gin.Context) {
+	var req request.RefreshTokenRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(appErrBadRequest(err))
+		return
+	}
+	data, err := ctl.svc.RefreshToken(c.Request.Context(), req.RefreshToken)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	ctl.ok(c, data)
+}
 func (ctl *Controller) Me(c *gin.Context) {
 	current, ok := utils.ContextCurrentUser(c)
 	if !ok {

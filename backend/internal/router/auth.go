@@ -14,6 +14,7 @@ func RegisterAuthRoutes(r *gin.RouterGroup, c *controller.Controller, authRequir
 		auth.POST("/password-reset/email-code/send", c.SendResetCode)
 		auth.POST("/password-reset/confirm", c.ResetPassword)
 		auth.POST("/login", c.Login)
+		auth.POST("/refresh", c.RefreshToken)
 		auth.GET("/me", authRequired, c.Me)
 		auth.POST("/logout", authRequired, c.Logout)
 		auth.POST("/password/change", authRequired, c.ChangePassword)

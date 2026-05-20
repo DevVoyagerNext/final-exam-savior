@@ -165,12 +165,7 @@ func sha256HexBytes(input []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 func detectPreviewMode(contentType string) string {
-	switch {
-	case strings.Contains(contentType, "officedocument"), strings.Contains(contentType, "msword"), strings.Contains(contentType, "presentation"):
-		return "CONVERT_TO_PDF"
-	default:
-		return "DIRECT"
-	}
+	return "DIRECT"
 }
 func detectRenderType(contentType string) string {
 	switch {
@@ -184,6 +179,35 @@ func detectRenderType(contentType string) string {
 }
 func isPlainText(contentType string) bool {
 	return strings.Contains(contentType, "text/plain") || strings.Contains(contentType, "text/markdown") || strings.Contains(contentType, "application/json")
+}
+func isMarkdownPreviewType(contentType string, fileName string) bool {
+	ext := strings.ToLower(pathExt(fileName))
+	switch ext {
+	case ".md", ".markdown":
+		return true
+	}
+	return strings.Contains(contentType, "text/markdown")
+}
+func isOfficePreviewType(contentType string, fileName string) bool {
+	ext := strings.ToLower(pathExt(fileName))
+	switch ext {
+	case ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx":
+		return true
+	}
+	return strings.Contains(contentType, "officedocument") ||
+		strings.Contains(contentType, "msword") ||
+		strings.Contains(contentType, "ms-excel") ||
+		strings.Contains(contentType, "presentation")
+}
+func isGoogleViewerType(contentType string, fileName string) bool {
+	ext := strings.ToLower(pathExt(fileName))
+	switch ext {
+	case ".pdf", ".txt", ".json":
+		return true
+	}
+	return strings.Contains(contentType, "application/pdf") ||
+		strings.Contains(contentType, "text/plain") ||
+		strings.Contains(contentType, "application/json")
 }
 func pathExt(name string) string {
 	idx := strings.LastIndex(name, ".")
