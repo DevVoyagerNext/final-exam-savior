@@ -82,9 +82,6 @@ func (s *Service) GetFileDetail(ctx context.Context, current *CurrentUser, fileI
 	if err != nil {
 		return nil, err
 	}
-	// 获取预览记录
-	var preview model.FilePreviewRecord
-	_ = s.dao.Gorm().WithContext(ctx).Where("file_id = ?", fileID).First(&preview).Error
 	// 获取生成总记录
 	var record model.FileGenerateRecord
 	_ = s.dao.Gorm().WithContext(ctx).Where("file_id = ?", fileID).First(&record).Error
@@ -176,20 +173,6 @@ func (s *Service) UploadFile(ctx context.Context, current *CurrentUser, fileHead
 			}
 			if err := tx.Create(&file).Error; err != nil {
 				return fmt.Errorf("create file: %w", err)
-			}
-			// 初始化预览记录
-			previewMode := detectPreviewMode(contentType)
-			previewStatus := "SUCCESS"
-			if previewMode == "CONVERT_TO_PDF" {
-				previewStatus = "PENDING"
-			}
-			preview := model.FilePreviewRecord{
-				FileID:        file.ID,
-				PreviewMode:   previewMode,
-				PreviewStatus: previewStatus,
-			}
-			if err := tx.Create(&preview).Error; err != nil {
-				return fmt.Errorf("create preview record: %w", err)
 			}
 			// 初始化生成记录
 			generateRecord := model.FileGenerateRecord{
@@ -354,8 +337,6 @@ func (s *Service) DeleteFile(ctx context.Context, current *CurrentUser, fileID u
 		if err := tx.First(&file, fileID).Error; err != nil {
 			return newError(http.StatusNotFound, codeNotFound, "文件不存在", err)
 		}
-		var preview model.FilePreviewRecord
-		_ = tx.Where("file_id = ?", fileID).First(&preview).Error
 		var generateRecord model.FileGenerateRecord
 		_ = tx.Where("file_id = ?", fileID).First(&generateRecord).Error
 		var items []model.FileGenerateRecordItem
@@ -363,9 +344,6 @@ func (s *Service) DeleteFile(ctx context.Context, current *CurrentUser, fileID u
 
 		// 收集所有需要从 OSS/本地存储中物理删除的 URL
 		objectURLs := []string{file.SourceObjectURL}
-		if preview.PreviewObjectURL != nil {
-			objectURLs = append(objectURLs, *preview.PreviewObjectURL)
-		}
 		for _, item := range items {
 			if item.ResultObjectURL != nil {
 				objectURLs = append(objectURLs, *item.ResultObjectURL)
@@ -389,11 +367,6 @@ func (s *Service) DeleteFile(ctx context.Context, current *CurrentUser, fileID u
 				return fmt.Errorf("delete latest generate record: %w", err)
 			}
 		}
-		if preview.ID > 0 {
-			if err := tx.Delete(&preview).Error; err != nil {
-				return fmt.Errorf("delete preview record: %w", err)
-			}
-		}
 		if err := tx.Delete(&file).Error; err != nil {
 			return fmt.Errorf("delete file: %w", err)
 		}
@@ -401,10 +374,6 @@ func (s *Service) DeleteFile(ctx context.Context, current *CurrentUser, fileID u
 		if err := tx.Model(&model.GenerateTask{}).Where("file_id = ?", fileID).
 			Updates(map[string]any{"file_id": nil, "file_deleted_snapshot": true}).Error; err != nil {
 			return fmt.Errorf("update task snapshots: %w", err)
-		}
-		if err := tx.Model(&model.PreviewConversionTask{}).Where("file_id = ?", fileID).
-			Update("file_id", nil).Error; err != nil {
-			return fmt.Errorf("update preview snapshots: %w", err)
 		}
 		return nil
 	}))
@@ -421,8 +390,6 @@ func (s *Service) PreviewSource(ctx context.Context, current *CurrentUser, fileI
 	if err != nil {
 		return nil, newError(http.StatusInternalServerError, codeInternal, "生成预览地址失败", err)
 	}
-	// 标记预览状态为就绪
-	s.markPreviewReady(ctx, file.ID)
 	return map[string]any{
 		"fileId":         file.ID,
 		"previewMode":    "DIRECT",
@@ -433,18 +400,6 @@ func (s *Service) PreviewSource(ctx context.Context, current *CurrentUser, fileI
 		"renderType":     renderType,
 		"downloadUrl":    fmt.Sprintf("/api/v1/files/%d/download-source", file.ID),
 	}, nil
-}
-
-// RetryPreviewConversion 管理员手动重置预览状态
-func (s *Service) RetryPreviewConversion(ctx context.Context, current *CurrentUser, fileID uint64) error {
-	if current.User.Role != "ADMIN" {
-		return newError(http.StatusForbidden, codeForbidden, "无权限", nil)
-	}
-	if _, err := s.loadAccessibleFile(ctx, current, fileID); err != nil {
-		return newError(http.StatusNotFound, codeNotFound, "文件不存在", err)
-	}
-	s.markPreviewReady(ctx, fileID)
-	return nil
 }
 
 // PreviewResult 获取 AI 生成结果的预览地址（通常是 HTML 文件）
@@ -607,17 +562,6 @@ func (s *Service) buildSourcePreviewURL(ctx context.Context, file model.Learning
 	}
 	// 默认直接返回带签名的源文件 URL
 	return signed, detectRenderType(file.SourceFileType), nil
-}
-
-// markPreviewReady 快速更新数据库中的预览状态为成功
-func (s *Service) markPreviewReady(ctx context.Context, fileID uint64) {
-	_ = s.dao.Gorm().WithContext(ctx).Model(&model.FilePreviewRecord{}).Where("file_id = ?", fileID).Updates(map[string]any{
-		"preview_mode":       "DIRECT",
-		"preview_status":     "SUCCESS",
-		"preview_object_url": nil,
-		"last_error_message": nil,
-		"last_success_at":    time.Now(),
-	}).Error
 }
 
 // DownloadResult 获取生成结果的下载地址

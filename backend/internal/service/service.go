@@ -64,6 +64,10 @@ func New(ctx context.Context, cfg config.Config) (*Service, error) {
 			_ = store.Close()
 			return nil, fmt.Errorf("auto migrate: %w", err)
 		}
+		if err := svc.dropObsoleteTables(); err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("drop obsolete tables: %w", err)
+		}
 	}
 
 	if err := svc.ensureSeeds(ctx); err != nil {
@@ -167,7 +171,7 @@ func (s *Service) ensureSeeds(ctx context.Context) error {
 	return nil
 }
 func (s *Service) ensureRedisGroups(ctx context.Context) error {
-	for _, stream := range []string{s.cfg.Redis.GenerateStream, s.cfg.Redis.PreviewStream} {
+	for _, stream := range []string{s.cfg.Redis.GenerateStream} {
 		err := s.dao.Redis().XGroupCreateMkStream(ctx, stream, s.cfg.Redis.ConsumerGroup, "$").Err()
 		if err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
 			return fmt.Errorf("create redis group %s: %w", stream, err)
@@ -175,6 +179,11 @@ func (s *Service) ensureRedisGroups(ctx context.Context) error {
 	}
 	return nil
 }
+
+func (s *Service) dropObsoleteTables() error {
+	return s.dao.Gorm().Migrator().DropTable("file_preview_records", "preview_conversion_tasks")
+}
+
 func (s *Service) Close() error {
 	return s.dao.Close()
 }

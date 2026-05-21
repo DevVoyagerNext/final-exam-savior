@@ -4,9 +4,13 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   EyeOutlined,
+  LockOutlined,
+  MailOutlined,
+  SafetyCertificateOutlined,
+  UserOutlined,
   PlusOutlined,
   ReloadOutlined,
-  UploadOutlined,
+  InboxOutlined,
 } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -35,7 +39,7 @@ import type { UploadFile } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
 
-import { adminApi, authApi, fileApi, notificationApi, resolveOpenableUrl, taskApi } from './api.ts'
+import { ApiError, adminApi, authApi, fileApi, notificationApi, resolveOpenableUrl, taskApi } from './api.ts'
 import { useAuth } from './auth.tsx'
 import { GeetestCaptchaPanel } from './geetest.tsx'
 import type {
@@ -54,7 +58,6 @@ import type {
   NotificationFilters,
   NotificationRecord,
   NotificationType,
-  PreviewStatus,
   RegisterRequest,
   ResetPasswordRequest,
   RetryTaskItemParams,
@@ -104,20 +107,6 @@ const notificationTypeLabelMap: Record<NotificationType, string> = {
   PREVIEW_CONVERSION_FAIL: '预览转换失败',
 }
 
-const previewStatusLabelMap: Record<PreviewStatus, string> = {
-  PENDING: '待转换',
-  PROCESSING: '转换中',
-  SUCCESS: '可预览',
-  FAIL: '转换失败',
-}
-
-const previewStatusColorMap: Record<PreviewStatus, string> = {
-  PENDING: 'default',
-  PROCESSING: 'processing',
-  SUCCESS: 'success',
-  FAIL: 'error',
-}
-
 function formatBytes(size: number) {
   if (size < 1024) {
     return `${size} B`
@@ -148,6 +137,16 @@ function isTaskItemType(value: string | undefined): value is TaskItemType {
   return taskItemTypes.includes((value ?? '').toUpperCase() as TaskItemType)
 }
 
+function getErrorMessage(error: unknown) {
+  if (error instanceof ApiError) {
+    return error.message
+  }
+  if (error instanceof Error) {
+    return error.message
+  }
+  return '请求失败，请稍后重试'
+}
+
 function isRunningGenerateStatus(status: GenerateStatus | undefined) {
   return status === 'PENDING' || status === 'PROCESSING'
 }
@@ -162,7 +161,7 @@ function VisibilityTag({ visibility }: { visibility: Visibility }) {
 
 function PageHeaderCard(props: {
   title: string
-  description: string
+  description?: string
   extra?: React.ReactNode
   children?: React.ReactNode
 }) {
@@ -173,9 +172,11 @@ function PageHeaderCard(props: {
           <Typography.Title level={3} style={{ marginTop: 0 }}>
             {props.title}
           </Typography.Title>
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            {props.description}
-          </Typography.Paragraph>
+          {props.description && (
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+              {props.description}
+            </Typography.Paragraph>
+          )}
         </Col>
         {props.extra ? <Col>{props.extra}</Col> : null}
       </Row>
@@ -187,6 +188,7 @@ function PageHeaderCard(props: {
 export function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [captchaData, setCaptchaData] = useState<GeetestValidateResult | null>(null)
+  const [captchaVersion, setCaptchaVersion] = useState(0)
   const navigate = useNavigate()
   const { login } = useAuth()
 
@@ -204,35 +206,47 @@ export function LoginPage() {
       })
       message.success('登录成功')
       navigate('/files', { replace: true })
+    } catch (error) {
+      message.error(getErrorMessage(error))
     } finally {
+      setCaptchaData(null)
+      setCaptchaVersion((value) => value + 1)
       setLoading(false)
     }
   }
 
   return (
-    <Card variant="borderless">
-      <Typography.Title level={3}>登录</Typography.Title>
-      <Form layout="vertical" onFinish={onFinish} initialValues={{ email: 'admin@qq.com', password: '12345678' }}>
-        <Form.Item label="QQ 邮箱" name="email" rules={[{ required: true }, { type: 'email' }]}>
-          <Input placeholder="请输入 QQ 邮箱" />
+    <div className="auth-form-container">
+      <div className="auth-form-header">
+        <Typography.Title level={2} className="auth-title">欢迎回来</Typography.Title>
+        <Typography.Text type="secondary" className="auth-subtitle">登录您的账号以继续</Typography.Text>
+      </div>
+      <Form layout="vertical" onFinish={onFinish} size="large" className="auth-form">
+        <Form.Item name="email" rules={[{ required: true }, { type: 'email' }]}>
+          <Input placeholder="QQ 邮箱" prefix={<MailOutlined className="auth-input-icon" />} className="auth-input" />
         </Form.Item>
-        <Form.Item label="密码" name="password" rules={[{ required: true }, { min: 8 }]}>
-          <Input.Password placeholder="请输入密码" />
+        <Form.Item name="password" rules={[{ required: true }, { min: 8 }]}>
+          <Input.Password placeholder="密码" prefix={<LockOutlined className="auth-input-icon" />} className="auth-input" />
         </Form.Item>
-        <GeetestCaptchaPanel sceneLabel="登录提交" value={captchaData} onChange={setCaptchaData} />
-        <Space orientation="vertical" style={{ width: '100%' }}>
-          <Button type="primary" htmlType="submit" block loading={loading}>
+        <GeetestCaptchaPanel
+          key={captchaVersion}
+          sceneLabel="登录提交"
+          value={captchaData}
+          onChange={setCaptchaData}
+        />
+        <Form.Item style={{ marginTop: 24, marginBottom: 12 }}>
+          <Button type="primary" htmlType="submit" block loading={loading} className="auth-submit-btn">
             登录
           </Button>
-          <Button block onClick={() => navigate('/register')}>
-            去注册
-          </Button>
-          <Button type="link" onClick={() => navigate('/forgot-password')}>
-            忘记密码
-          </Button>
-        </Space>
+        </Form.Item>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+          <Button type="link" onClick={() => navigate('/forgot-password')} className="forgot-pwd-btn">忘记密码？</Button>
+        </div>
+        <div className="auth-form-footer" style={{ marginTop: 0 }}>
+          还没有账号？ <Button type="link" onClick={() => navigate('/register')} className="auth-link-btn">立即注册</Button>
+        </div>
       </Form>
-    </Card>
+    </div>
   )
 }
 
@@ -240,6 +254,7 @@ export function RegisterPage() {
   const [sending, setSending] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [captchaData, setCaptchaData] = useState<GeetestValidateResult | null>(null)
+  const [captchaVersion, setCaptchaVersion] = useState(0)
   const [form] = Form.useForm()
   const navigate = useNavigate()
   const { register } = useAuth()
@@ -258,56 +273,56 @@ export function RegisterPage() {
     try {
       const result = await authApi.sendRegisterCode({ email, captchaData })
       message.success(`验证码已发送，${Math.floor(result.expireSeconds / 60)} 分钟内有效`)
+    } catch (error) {
+      message.error(getErrorMessage(error))
     } finally {
+      setCaptchaData(null)
+      setCaptchaVersion((value) => value + 1)
       setSending(false)
     }
   }
 
-  const onFinish = async (values: Omit<RegisterRequest, 'captchaData'>) => {
-    if (!captchaData) {
-      message.warning('请先完成安全验证')
-      return
-    }
-
+  const onFinish = async (values: RegisterRequest) => {
     setSubmitting(true)
     try {
-      await register({
-        ...values,
-        captchaData,
-      })
+      await register(values)
       message.success('注册成功，已自动登录')
       navigate('/files', { replace: true })
+    } catch (error) {
+      message.error(getErrorMessage(error))
     } finally {
       setSubmitting(false)
     }
   }
 
   return (
-    <Card variant="borderless">
-      <Typography.Title level={3}>注册</Typography.Title>
-      <Form form={form} layout="vertical" onFinish={onFinish}>
-        <Form.Item label="QQ 邮箱" name="email" rules={[{ required: true }, { type: 'email' }]}>
-          <Input placeholder="123456789@qq.com" />
+    <div className="auth-form-container">
+      <div className="auth-form-header">
+        <Typography.Title level={2} className="auth-title">创建账号</Typography.Title>
+        <Typography.Text type="secondary" className="auth-subtitle">开启您的期末复习之旅</Typography.Text>
+      </div>
+      <Form form={form} layout="vertical" onFinish={onFinish} size="large" className="auth-form">
+        <Form.Item name="email" rules={[{ required: true }, { type: 'email' }]}>
+          <Input placeholder="QQ 邮箱" prefix={<MailOutlined className="auth-input-icon" />} className="auth-input" />
         </Form.Item>
-        <GeetestCaptchaPanel sceneLabel="注册" value={captchaData} onChange={setCaptchaData} />
-        <Form.Item label="邮箱验证码" required>
+        <GeetestCaptchaPanel key={captchaVersion} sceneLabel="注册" value={captchaData} onChange={setCaptchaData} />
+        <Form.Item required style={{ marginBottom: 24, marginTop: 24 }}>
           <Space.Compact style={{ width: '100%' }}>
             <Form.Item name="emailCode" noStyle rules={[{ required: true }]}>
-              <Input placeholder="6 位验证码" />
+              <Input placeholder="6 位验证码" prefix={<SafetyCertificateOutlined className="auth-input-icon" />} className="auth-input" style={{ width: 'calc(100% - 120px)' }} />
             </Form.Item>
-            <Button loading={sending} onClick={sendCode}>
-              发送验证码
+            <Button loading={sending} onClick={sendCode} style={{ width: 120, height: 48, borderRadius: '0 12px 12px 0' }}>
+              获取验证码
             </Button>
           </Space.Compact>
         </Form.Item>
-        <Form.Item label="邀请码" name="inviteCode" rules={[{ required: true }]}>
-          <Input placeholder="请输入邀请码" />
+        <Form.Item name="inviteCode" rules={[{ required: true }]}>
+          <Input placeholder="邀请码" prefix={<UserOutlined className="auth-input-icon" />} className="auth-input" />
         </Form.Item>
-        <Form.Item label="密码" name="password" rules={[{ required: true }, { min: 8 }]}>
-          <Input.Password placeholder="至少 8 位" />
+        <Form.Item name="password" rules={[{ required: true }, { min: 8 }]}>
+          <Input.Password placeholder="密码 (至少 8 位)" prefix={<LockOutlined className="auth-input-icon" />} className="auth-input" />
         </Form.Item>
         <Form.Item
-          label="确认密码"
           name="confirmPassword"
           dependencies={['password']}
           rules={[
@@ -322,18 +337,18 @@ export function RegisterPage() {
             }),
           ]}
         >
-          <Input.Password placeholder="请再次输入密码" />
+          <Input.Password placeholder="确认密码" prefix={<LockOutlined className="auth-input-icon" />} className="auth-input" />
         </Form.Item>
-        <Space orientation="vertical" style={{ width: '100%' }}>
-          <Button type="primary" htmlType="submit" block loading={submitting}>
+        <Form.Item style={{ marginTop: 24 }}>
+          <Button type="primary" htmlType="submit" block loading={submitting} className="auth-submit-btn">
             注册并登录
           </Button>
-          <Button block onClick={() => navigate('/login')}>
-            返回登录
-          </Button>
-        </Space>
+        </Form.Item>
+        <div className="auth-form-footer">
+          已有账号？ <Button type="link" onClick={() => navigate('/login')} className="auth-link-btn">直接登录</Button>
+        </div>
       </Form>
-    </Card>
+    </div>
   )
 }
 
@@ -341,6 +356,7 @@ export function ForgotPasswordPage() {
   const [sending, setSending] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [captchaData, setCaptchaData] = useState<GeetestValidateResult | null>(null)
+  const [captchaVersion, setCaptchaVersion] = useState(0)
   const [form] = Form.useForm()
   const navigate = useNavigate()
 
@@ -358,7 +374,12 @@ export function ForgotPasswordPage() {
     try {
       await authApi.sendResetCode({ email, captchaData })
       message.success('重置验证码已发送')
+      message.info('如需再次发送，请重新完成安全验证')
+    } catch (error) {
+      message.error(getErrorMessage(error))
     } finally {
+      setCaptchaData(null)
+      setCaptchaVersion((value) => value + 1)
       setSending(false)
     }
   }
@@ -375,28 +396,35 @@ export function ForgotPasswordPage() {
   }
 
   return (
-    <Card variant="borderless">
-      <Typography.Title level={3}>忘记密码</Typography.Title>
-      <Form form={form} layout="vertical" onFinish={onFinish}>
-        <Form.Item label="QQ 邮箱" name="email" rules={[{ required: true }, { type: 'email' }]}>
-          <Input placeholder="123456789@qq.com" />
+    <div className="auth-form-container">
+      <div className="auth-form-header">
+        <Typography.Title level={2} className="auth-title">重置密码</Typography.Title>
+        <Typography.Text type="secondary" className="auth-subtitle">验证邮箱以设置新密码</Typography.Text>
+      </div>
+      <Form form={form} layout="vertical" onFinish={onFinish} size="large" className="auth-form">
+        <Form.Item name="email" rules={[{ required: true }, { type: 'email' }]}>
+          <Input placeholder="QQ 邮箱" prefix={<MailOutlined className="auth-input-icon" />} className="auth-input" />
         </Form.Item>
-        <GeetestCaptchaPanel sceneLabel="发送重置验证码" value={captchaData} onChange={setCaptchaData} />
-        <Form.Item label="邮箱验证码" required>
+        <GeetestCaptchaPanel
+          key={captchaVersion}
+          sceneLabel="发送重置验证码"
+          value={captchaData}
+          onChange={setCaptchaData}
+        />
+        <Form.Item required style={{ marginBottom: 24, marginTop: 24 }}>
           <Space.Compact style={{ width: '100%' }}>
             <Form.Item name="emailCode" noStyle rules={[{ required: true }]}>
-              <Input placeholder="6 位验证码" />
+              <Input placeholder="6 位验证码" prefix={<SafetyCertificateOutlined className="auth-input-icon" />} className="auth-input" style={{ width: 'calc(100% - 120px)' }} />
             </Form.Item>
-            <Button loading={sending} onClick={sendCode}>
-              发送验证码
+            <Button loading={sending} onClick={sendCode} style={{ width: 120, height: 48, borderRadius: '0 12px 12px 0' }}>
+              获取验证码
             </Button>
           </Space.Compact>
         </Form.Item>
-        <Form.Item label="新密码" name="newPassword" rules={[{ required: true }, { min: 8 }]}>
-          <Input.Password placeholder="至少 8 位" />
+        <Form.Item name="newPassword" rules={[{ required: true }, { min: 8 }]}>
+          <Input.Password placeholder="新密码 (至少 8 位)" prefix={<LockOutlined className="auth-input-icon" />} className="auth-input" />
         </Form.Item>
         <Form.Item
-          label="确认新密码"
           name="confirmPassword"
           dependencies={['newPassword']}
           rules={[
@@ -411,18 +439,18 @@ export function ForgotPasswordPage() {
             }),
           ]}
         >
-          <Input.Password placeholder="请再次输入新密码" />
+          <Input.Password placeholder="确认新密码" prefix={<LockOutlined className="auth-input-icon" />} className="auth-input" />
         </Form.Item>
-        <Space orientation="vertical" style={{ width: '100%' }}>
-          <Button type="primary" htmlType="submit" block loading={submitting}>
+        <Form.Item style={{ marginTop: 24 }}>
+          <Button type="primary" htmlType="submit" block loading={submitting} className="auth-submit-btn">
             重置密码
           </Button>
-          <Button block onClick={() => navigate('/login')}>
-            返回登录
-          </Button>
-        </Space>
+        </Form.Item>
+        <div className="auth-form-footer">
+          记起密码了？ <Button type="link" onClick={() => navigate('/login')} className="auth-link-btn">返回登录</Button>
+        </div>
       </Form>
-    </Card>
+    </div>
   )
 }
 
@@ -447,43 +475,48 @@ export function ChangePasswordPage() {
   return (
     <div className="page-stack">
       <PageHeaderCard title="修改密码" description="已登录用户通过旧密码修改密码，成功后旧登录态立即失效。" />
-      <Card variant="borderless">
-        <Form form={form} layout="vertical" onFinish={onFinish}>
-          <Form.Item label="旧密码" name="oldPassword" rules={[{ required: true }]}>
-            <Input.Password placeholder="请输入旧密码" />
-          </Form.Item>
-          <Form.Item label="新密码" name="newPassword" rules={[{ required: true }, { min: 8 }]}>
-            <Input.Password placeholder="请输入新密码" />
-          </Form.Item>
-          <Form.Item
-            label="确认新密码"
-            name="confirmPassword"
-            dependencies={['newPassword']}
-            rules={[
-              { required: true },
-              ({ getFieldValue }) => ({
-                validator(_, value) {
-                  if (!value || getFieldValue('newPassword') === value) {
-                    return Promise.resolve()
-                  }
-                  return Promise.reject(new Error('两次输入的密码不一致'))
-                },
-              }),
-            ]}
-          >
-            <Input.Password placeholder="请再次输入新密码" />
-          </Form.Item>
-          <Button type="primary" htmlType="submit" loading={loading}>
-            确认修改
-          </Button>
-        </Form>
-      </Card>
+      <div className="settings-container">
+        <Card variant="borderless" className="settings-card">
+          <Form form={form} layout="vertical" onFinish={onFinish} size="large">
+            <Form.Item label="旧密码" name="oldPassword" rules={[{ required: true }]}>
+              <Input.Password placeholder="请输入旧密码" className="settings-input" />
+            </Form.Item>
+            <Form.Item label="新密码" name="newPassword" rules={[{ required: true }, { min: 8 }]}>
+              <Input.Password placeholder="请输入新密码" className="settings-input" />
+            </Form.Item>
+            <Form.Item
+              label="确认新密码"
+              name="confirmPassword"
+              dependencies={['newPassword']}
+              rules={[
+                { required: true },
+                ({ getFieldValue }) => ({
+                  validator(_, value) {
+                    if (!value || getFieldValue('newPassword') === value) {
+                      return Promise.resolve()
+                    }
+                    return Promise.reject(new Error('两次输入的密码不一致'))
+                  },
+                }),
+              ]}
+            >
+              <Input.Password placeholder="请再次输入新密码" className="settings-input" />
+            </Form.Item>
+            <Form.Item style={{ marginTop: 32, marginBottom: 0 }}>
+              <Button type="primary" htmlType="submit" loading={loading} className="settings-submit-btn">
+                确认修改
+              </Button>
+            </Form.Item>
+          </Form>
+        </Card>
+      </div>
     </div>
   )
 }
 
 export function FileListPage() {
   const navigate = useNavigate()
+  const { isAdmin } = useAuth()
   const [filters, setFilters] = useState<FileFilters>({ pageNo: 1, pageSize: 10 })
   const categoriesQuery = useQuery({ queryKey: ['file-categories'], queryFn: fileApi.getCategories })
   const filesQuery = useQuery({
@@ -506,34 +539,35 @@ export function FileListPage() {
     <div className="page-stack">
       <PageHeaderCard
         title="文件列表"
-        description="支持分类筛选、文件名搜索、可见范围筛选，并直接进入预览、详情和下载动作。"
         extra={
           <Space>
             <Button icon={<ReloadOutlined />} onClick={() => void filesQuery.refetch()}>
               刷新
             </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/upload')}>
-              上传文件
-            </Button>
+            {isAdmin ? (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/upload')}>
+                上传文件
+              </Button>
+            ) : null}
           </Space>
         }
       >
-        <Row gutter={[16, 16]}>
-          <Col xs={24} md={6}>
+        <Space wrap size="middle">
+          <div className="stat-card">
             <Statistic title="当前文件数" value={filesQuery.data?.total ?? 0} />
-          </Col>
-          <Col xs={24} md={6}>
+          </div>
+          <div className="stat-card">
             <Statistic title="公开文件" value={(filesQuery.data?.list ?? []).filter((item) => item.visibility === 'PUBLIC').length} />
-          </Col>
-          <Col xs={24} md={6}>
+          </div>
+          <div className="stat-card">
             <Statistic title="处理中" value={(filesQuery.data?.list ?? []).filter((item) => item.generateTotalStatus === 'PROCESSING').length} />
-          </Col>
-          <Col xs={24} md={6}>
+          </div>
+          <div className="stat-card">
             <Statistic title="已成功" value={(filesQuery.data?.list ?? []).filter((item) => item.generateTotalStatus === 'SUCCESS').length} />
-          </Col>
-        </Row>
+          </div>
+        </Space>
       </PageHeaderCard>
-      <Card variant="borderless">
+      <Card variant="borderless" className="data-table-card">
         {filesQuery.isError ? (
           <Alert
             type="error"
@@ -543,53 +577,64 @@ export function FileListPage() {
             style={{ marginBottom: 16 }}
           />
         ) : null}
-        <Form layout="vertical" onFinish={(values) => setFilters({ ...filters, ...values })}>
-          <Row gutter={[16, 8]}>
-            <Col xs={24} md={8}>
-              <Form.Item label="文件名搜索" name="keyword">
-                <Input placeholder="输入文件名关键字" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={5}>
-              <Form.Item label="分类" name="categoryId">
-                <Select allowClear placeholder="全部分类" options={categoryOptions} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={5}>
-              <Form.Item label="可见范围" name="visibility">
-                <Select allowClear placeholder="全部范围" options={visibilityOptions} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={4}>
-              <Form.Item label="生成状态" name="generateStatus">
-                <Select
-                  allowClear
-                  placeholder="全部状态"
-                  options={Object.entries(statusLabelMap).map(([value, label]) => ({ label, value }))}
-                />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={2} className="form-action-col">
-              <Button type="primary" htmlType="submit" block>
-                查询
-              </Button>
-            </Col>
-          </Row>
-        </Form>
+        <div className="filter-bar">
+          <Form layout="vertical" onFinish={(values) => setFilters({ ...filters, ...values })}>
+            <Row gutter={[16, 8]} align="bottom">
+              <Col xs={24} md={8}>
+                <Form.Item label="文件名搜索" name="keyword">
+                  <Input placeholder="输入文件名关键字" size="large" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={5}>
+                <Form.Item label="分类" name="categoryId">
+                  <Select allowClear placeholder="全部分类" options={categoryOptions} size="large" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={5}>
+                <Form.Item label="可见范围" name="visibility">
+                  <Select allowClear placeholder="全部范围" options={visibilityOptions} size="large" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={4}>
+                <Form.Item label="生成状态" name="generateStatus">
+                  <Select
+                    allowClear
+                    placeholder="全部状态"
+                    options={Object.entries(statusLabelMap).map(([value, label]) => ({ label, value }))}
+                    size="large"
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={2} className="form-action-col">
+                <Button type="primary" htmlType="submit" block size="large">
+                  查询
+                </Button>
+              </Col>
+            </Row>
+          </Form>
+        </div>
         <Table<FileListItem>
           rowKey="id"
           loading={filesQuery.isLoading || previewMutation.isPending}
           dataSource={filesQuery.data?.list}
           pagination={false}
-          scroll={{ x: 1080 }}
+          scroll={{ x: 800 }}
           columns={[
-            { title: '文件名', dataIndex: 'sourceFileName', width: 260 },
+            { 
+              title: '文件名', 
+              dataIndex: 'sourceFileName', 
+              width: 260,
+              render: (text: string) => (
+                <Typography.Text 
+                  style={{ maxWidth: 220, margin: 0, fontSize: 16 }} 
+                  ellipsis={{ tooltip: text }}
+                >
+                  {text}
+                </Typography.Text>
+              )
+            },
             { title: '分类', dataIndex: 'categoryName', width: 140 },
-            { title: '上传者', dataIndex: 'uploadUserEmail', width: 180 },
             { title: '大小', dataIndex: 'sourceFileSize', width: 100, render: (value: number) => formatBytes(value) },
-            { title: '上传时间', dataIndex: 'uploadTime', width: 180 },
-            { title: '可见范围', dataIndex: 'visibility', width: 120, render: (value: Visibility) => <VisibilityTag visibility={value} /> },
-            { title: '生成状态', dataIndex: 'generateTotalStatus', width: 120, render: (value: GenerateStatus) => <StatusTag status={value} /> },
             {
               title: '操作',
               key: 'actions',
@@ -597,14 +642,15 @@ export function FileListPage() {
               width: 260,
               render: (_, record) => (
                 <Space wrap>
-                  <Button size="small" onClick={() => navigate(`/files/${record.id}`)}>
+                  <Button type="primary" size="small" onClick={() => navigate(`/files/${record.id}`)}>
                     详情
                   </Button>
-                  <Button size="small" icon={<EyeOutlined />} onClick={() => previewMutation.mutate(record.id)}>
+                  <Button size="small" type="default" icon={<EyeOutlined />} onClick={() => previewMutation.mutate(record.id)}>
                     预览源文件
                   </Button>
                   <Button
                     size="small"
+                    type="dashed"
                     icon={<DownloadOutlined />}
                     onClick={() => void openRemoteLink(async () => (await fileApi.downloadSource(record.id)).url)}
                   >
@@ -621,23 +667,13 @@ export function FileListPage() {
 }
 
 export function FileDetailPage() {
-  const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const { isAdmin } = useAuth()
   const params = useParams()
   const fileId = Number(params.fileId)
   const detailQuery = useQuery({
     queryKey: ['file-detail', fileId],
     queryFn: () => fileApi.getFileDetail(fileId),
     enabled: Number.isFinite(fileId),
-  })
-
-  const retryPreviewMutation = useMutation({
-    mutationFn: (targetFileId: number) => adminApi.retryPreviewConversion(targetFileId),
-    onSuccess: async () => {
-      message.success('已提交预览转换重试请求')
-      await queryClient.invalidateQueries({ queryKey: ['file-detail', fileId] })
-    },
   })
 
   if (!Number.isFinite(fileId)) {
@@ -648,10 +684,6 @@ export function FileDetailPage() {
 
   return (
     <div className="page-stack">
-      <PageHeaderCard
-        title={record?.sourceFileName ?? '文件详情'}
-        description="展示文件基础信息、生成状态、预览状态和结果入口。"
-      />
       {detailQuery.isError ? (
         <Card variant="borderless">
           <Alert
@@ -668,98 +700,91 @@ export function FileDetailPage() {
         </Card>
       ) : (
         <>
-          <Card variant="borderless">
-            <Descriptions column={{ xs: 1, md: 2 }} bordered>
-              <Descriptions.Item label="文件名">{record.sourceFileName}</Descriptions.Item>
-              <Descriptions.Item label="文件哈希">{record.sourceFileHash}</Descriptions.Item>
-              <Descriptions.Item label="分类">{record.categoryName}</Descriptions.Item>
-              <Descriptions.Item label="上传者">{record.uploadUserEmail}</Descriptions.Item>
-              <Descriptions.Item label="可见范围">
-                <VisibilityTag visibility={record.visibility} />
-              </Descriptions.Item>
-              <Descriptions.Item label="生成状态">
-                <StatusTag status={record.generateRecord.totalStatus} />
-              </Descriptions.Item>
-              <Descriptions.Item label="文件大小">{formatBytes(record.sourceFileSize)}</Descriptions.Item>
-              <Descriptions.Item label="上传时间">{record.uploadTime}</Descriptions.Item>
-              <Descriptions.Item label="预览状态" span={2}>
-                <Tag color={previewStatusColorMap[record.previewRecord.previewStatus]}>
-                  {previewStatusLabelMap[record.previewRecord.previewStatus]}
-                </Tag>
-              </Descriptions.Item>
-            </Descriptions>
+          <div className="file-info-grid">
+            <div className="file-info-item full-width">
+              <div className="file-info-label">文件名</div>
+              <div className="file-info-value large">{record.sourceFileName}</div>
+            </div>
+            <div className="file-info-item">
+              <div className="file-info-label">分类</div>
+              <div className="file-info-value">{record.categoryName}</div>
+            </div>
+            <div className="file-info-item">
+              <div className="file-info-label">上传者</div>
+              <div className="file-info-value">{record.uploadUserEmail}</div>
+            </div>
+            <div className="file-info-item">
+              <div className="file-info-label">可见范围</div>
+              <div className="file-info-value"><VisibilityTag visibility={record.visibility} /></div>
+            </div>
+            <div className="file-info-item">
+              <div className="file-info-label">生成状态</div>
+              <div className="file-info-value"><StatusTag status={record.generateRecord.totalStatus} /></div>
+            </div>
+            <div className="file-info-item">
+              <div className="file-info-label">文件大小</div>
+              <div className="file-info-value">{formatBytes(record.sourceFileSize)}</div>
+            </div>
+            <div className="file-info-item">
+              <div className="file-info-label">上传时间</div>
+              <div className="file-info-value">{record.uploadTime}</div>
+            </div>
+            <div className="file-info-item">
+              <div className="file-info-label">文件哈希</div>
+              <div className="file-info-value mono">{record.sourceFileHash}</div>
+            </div>
+            <div className="file-info-item">
+              <div className="file-info-label">预览方式</div>
+              <div className="file-info-value"><Tag color="success" style={{ margin: 0 }}>直接在线预览</Tag></div>
+            </div>
+          </div>
+          <Card
+            title="生成结果与源文件"
+            variant="borderless"
+            className="data-table-card"
+            extra={
+              <Space>
+                <Button
+                  icon={<EyeOutlined />}
+                  onClick={() => void openRemoteLink(async () => (await fileApi.previewSource(record.id)).previewUrl)}
+                >
+                  在线预览源文件
+                </Button>
+                <Button
+                  icon={<DownloadOutlined />}
+                  onClick={() => void openRemoteLink(async () => (await fileApi.downloadSource(record.id)).url)}
+                >
+                  下载源文件
+                </Button>
+              </Space>
+            }
+          >
+            <List
+              dataSource={record.generateRecord.items}
+              renderItem={(item) => (
+                <List.Item
+                  actions={[
+                    <Button key="preview" size="small" type="primary" ghost onClick={() => navigate(`/files/${record.id}/results/${item.itemType}`)}>
+                      前端查看
+                    </Button>,
+                    <Button key="download" size="small" onClick={() => void openRemoteLink(async () => (await fileApi.downloadResult(record.id, item.itemType)).url)}>
+                      下载 HTML
+                    </Button>,
+                  ]}
+                >
+                  <List.Item.Meta
+                    avatar={item.itemStatus === 'SUCCESS' ? <CheckCircleOutlined /> : <ClockCircleOutlined />}
+                    title={itemTypeLabelMap[item.itemType]}
+                    description={
+                      <Space orientation="vertical" size={8} style={{ marginTop: 8 }}>
+                        <StatusTag status={item.itemStatus} />
+                      </Space>
+                    }
+                  />
+                </List.Item>
+              )}
+            />
           </Card>
-          <Row gutter={[16, 16]}>
-            <Col xs={24} xl={14}>
-              <Card
-                title="源文件预览与下载"
-                extra={
-                  <Space>
-                    <Button
-                      icon={<EyeOutlined />}
-                      onClick={() => void openRemoteLink(async () => (await fileApi.previewSource(record.id)).previewUrl)}
-                    >
-                      在线预览
-                    </Button>
-                    {isAdmin &&
-                    record.previewRecord.previewMode === 'CONVERT_TO_PDF' &&
-                    record.previewRecord.previewStatus === 'FAIL' ? (
-                      <Button
-                        loading={retryPreviewMutation.isPending}
-                        onClick={() => retryPreviewMutation.mutate(record.id)}
-                      >
-                        重试预览转换
-                      </Button>
-                    ) : null}
-                    <Button
-                      icon={<DownloadOutlined />}
-                      onClick={() => void openRemoteLink(async () => (await fileApi.downloadSource(record.id)).url)}
-                    >
-                      下载源文件
-                    </Button>
-                  </Space>
-                }
-              >
-                <Alert
-                  type={record.previewRecord.previewStatus === 'FAIL' ? 'error' : record.previewRecord.previewStatus === 'SUCCESS' ? 'success' : 'info'}
-                  title={
-                    record.previewRecord.previewStatus === 'SUCCESS'
-                      ? '当前源文件支持在线预览'
-                      : record.previewRecord.previewStatus === 'FAIL'
-                        ? '当前预览转换失败，管理员可手动重试转换任务'
-                        : record.previewRecord.previewStatus === 'PENDING'
-                          ? '当前文件首次预览需要转换为 PDF，点击在线预览后会自动发起转换'
-                          : '当前文件预览转换处理中，仍保留下载入口'
-                  }
-                  showIcon
-                />
-              </Card>
-            </Col>
-            <Col xs={24} xl={10}>
-              <Card title="生成结果状态">
-                <List
-                  dataSource={record.generateRecord.items}
-                  renderItem={(item) => (
-                    <List.Item
-                      actions={[
-                        <Button key="preview" size="small" onClick={() => navigate(`/files/${record.id}/results/${item.itemType}`)}>
-                          前端查看
-                        </Button>,
-                        <Button key="download" size="small" onClick={() => void openRemoteLink(async () => (await fileApi.downloadResult(record.id, item.itemType)).url)}>
-                          下载
-                        </Button>,
-                      ]}
-                    >
-                      <List.Item.Meta
-                        title={itemTypeLabelMap[item.itemType]}
-                        description={<StatusTag status={item.itemStatus} />}
-                      />
-                    </List.Item>
-                  )}
-                />
-              </Card>
-            </Col>
-          </Row>
         </>
       )}
     </div>
@@ -900,49 +925,85 @@ export function UploadPage() {
 
   return (
     <div className="page-stack">
-      <PageHeaderCard title="上传文件" description="管理员上传源文件、选择分类与可见范围后触发异步生成任务。" />
-      <Card variant="borderless">
-        <Form form={form} layout="vertical" onFinish={onFinish}>
-          <Row gutter={[16, 16]}>
-            <Col xs={24} md={12}>
-              <Form.Item label="文件分类" name="categoryId" rules={[{ required: true }]}>
-                <Select
-                  placeholder="请选择分类"
-                  options={(categoriesQuery.data ?? []).map((item: FileCategory) => ({
-                    label: item.name,
-                    value: item.id,
-                  }))}
-                />
+      <Form form={form} layout="vertical" onFinish={onFinish} size="large">
+        <Card variant="borderless" className="upload-workspace">
+          <div className="upload-workspace__header">
+            <div>
+              <Typography.Title level={3} className="upload-workspace__title">
+                上传文件
+              </Typography.Title>
+              <Typography.Text className="upload-workspace__subtitle">
+                选择源文件并完成配置后提交
+              </Typography.Text>
+            </div>
+          </div>
+          <Row gutter={[28, 28]} align="stretch">
+            <Col xs={24} xl={15}>
+              <div className="upload-stage-card">
+              <Form.Item
+                name="fileList"
+                valuePropName="fileList"
+                getValueFromEvent={(event) => event?.fileList ?? []}
+                rules={[{ required: true, message: '请选择要上传的文件' }]}
+                style={{ margin: 0 }}
+              >
+                <Upload.Dragger beforeUpload={() => false} maxCount={1} className="upload-dragger-massive">
+                  <div className="upload-icon-wrapper">
+                    <InboxOutlined className="upload-icon" />
+                  </div>
+                  <div className="upload-text">点击或拖拽上传</div>
+                  <div className="upload-stage-support">支持 `PDF / Word / PPT / 图片 / TXT / Markdown`</div>
+                </Upload.Dragger>
               </Form.Item>
+              </div>
             </Col>
-            <Col xs={24} md={12}>
-              <Form.Item label="可见范围" name="visibility" rules={[{ required: true }]}>
-                <Select placeholder="请选择可见范围" options={visibilityOptions} />
-              </Form.Item>
+            <Col xs={24} xl={9}>
+              <div className="upload-sidebar">
+                <div className="upload-config-card">
+                  <div className="upload-config-card__hero">
+                    <div className="upload-config-card__eyebrow">配置面板</div>
+                    <Typography.Title level={4} style={{ margin: 0 }}>
+                      设置上传参数
+                    </Typography.Title>
+                    <Typography.Text type="secondary">完成下面两项后即可提交</Typography.Text>
+                  </div>
+
+                  <div className="upload-config-card__body">
+                    <div className="upload-config-section">
+                      <div className="upload-config-section__label">文件分类</div>
+                      <Form.Item name="categoryId" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+                        <Select
+                          className="upload-config-select"
+                          size="large"
+                          placeholder="请选择分类"
+                          options={(categoriesQuery.data ?? []).map((item: FileCategory) => ({
+                            label: item.name,
+                            value: item.id,
+                          }))}
+                        />
+                      </Form.Item>
+                    </div>
+
+                    <div className="upload-config-section">
+                      <div className="upload-config-section__label">可见范围</div>
+                      <Form.Item name="visibility" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+                        <Select className="upload-config-select" size="large" placeholder="请选择可见范围" options={visibilityOptions} />
+                      </Form.Item>
+                    </div>
+                  </div>
+
+                  <div className="upload-config-card__footer">
+                    <div className="upload-config-card__hint">提交后立即创建任务</div>
+                    <Button type="primary" htmlType="submit" loading={uploadMutation.isPending} className="settings-submit-btn">
+                      确认上传
+                    </Button>
+                  </div>
+                </div>
+              </div>
             </Col>
           </Row>
-          <Form.Item
-            label="上传文件"
-            name="fileList"
-            valuePropName="fileList"
-            getValueFromEvent={(event) => event?.fileList ?? []}
-            rules={[{ required: true, message: '请上传文件' }]}
-          >
-            <Upload beforeUpload={() => false} maxCount={1}>
-              <Button icon={<UploadOutlined />}>选择文件</Button>
-            </Upload>
-          </Form.Item>
-          <Alert
-            type="info"
-            showIcon
-            title="支持 PDF、Word、PPT、图片扫描件、TXT/Markdown。Word/PPT 的 PDF 预览在首次查看时异步转换。"
-            style={{ marginBottom: 16 }}
-          />
-          <Button type="primary" htmlType="submit" loading={uploadMutation.isPending}>
-            开始上传并创建任务
-          </Button>
-        </Form>
-      </Card>
+        </Card>
+      </Form>
     </div>
   )
 }
@@ -983,7 +1044,7 @@ export function TaskListPage() {
         title="我的任务"
         description="第一版仅管理员可访问，支持查看总任务状态、子任务状态、自动重试次数以及手动重试失败项。"
       />
-      <Card variant="borderless">
+      <Card variant="borderless" className="data-table-card">
         {tasksQuery.isError ? (
           <Alert
             type="error"
@@ -993,26 +1054,29 @@ export function TaskListPage() {
             style={{ marginBottom: 16 }}
           />
         ) : null}
-        <Form layout="inline" onFinish={(values) => setFilters({ ...filters, ...values })}>
-          <Form.Item label="状态" name="status">
-            <Select
-              allowClear
-              style={{ width: 180 }}
-              placeholder="全部状态"
-              options={Object.entries(statusLabelMap).map(([value, label]) => ({ label, value }))}
-            />
-          </Form.Item>
-          <Form.Item>
-            <Button type="primary" htmlType="submit">
-              筛选
-            </Button>
-          </Form.Item>
-          <Form.Item>
-            <Button onClick={() => void tasksQuery.refetch()} icon={<ReloadOutlined />}>
-              刷新
-            </Button>
-          </Form.Item>
-        </Form>
+        <div className="filter-bar">
+          <Form layout="inline" onFinish={(values) => setFilters({ ...filters, ...values })}>
+            <Form.Item label="状态" name="status">
+              <Select
+                allowClear
+                style={{ width: 180 }}
+                placeholder="全部状态"
+                options={Object.entries(statusLabelMap).map(([value, label]) => ({ label, value }))}
+                size="large"
+              />
+            </Form.Item>
+            <Form.Item>
+              <Button type="primary" htmlType="submit" size="large">
+                筛选
+              </Button>
+            </Form.Item>
+            <Form.Item>
+              <Button onClick={() => void tasksQuery.refetch()} icon={<ReloadOutlined />} size="large">
+                刷新
+              </Button>
+            </Form.Item>
+          </Form>
+        </div>
         <Table
           style={{ marginTop: 16 }}
           rowKey="id"
@@ -1047,58 +1111,69 @@ export function TaskListPage() {
       <Drawer
         open={selectedTaskId !== null}
         width={720}
-        title="任务详情"
+        title={<span style={{ fontSize: 20, fontWeight: 700 }}>任务详情</span>}
         onClose={() => setSelectedTaskId(null)}
+        className="task-detail-drawer"
+        styles={{
+          header: { borderBottom: '1px solid #f1f5f9', padding: '20px 24px' },
+          body: { padding: '24px', background: '#f8fafc' },
+        }}
       >
         {!taskDetailQuery.data ? (
           <Empty description="暂无任务详情" />
         ) : (
           <Space orientation="vertical" style={{ width: '100%' }} size="large">
-            <Descriptions bordered column={1}>
-              <Descriptions.Item label="任务号">{taskDetailQuery.data.taskNo}</Descriptions.Item>
-              <Descriptions.Item label="状态">
-                <StatusTag status={taskDetailQuery.data.status} />
-              </Descriptions.Item>
-              <Descriptions.Item label="说明">
-                {taskDetailQuery.data.taskRemark ?? taskDetailQuery.data.lastErrorMessage ?? '无'}
-              </Descriptions.Item>
-            </Descriptions>
-            <List
-              header="子任务列表"
-              dataSource={taskDetailQuery.data.items}
-              renderItem={(item) => (
-                <List.Item
-                  actions={[
-                    item.status === 'FAIL' ? (
-                      <Button
-                        key="retry"
-                        type="link"
-                        loading={retryMutation.isPending}
-                        onClick={() =>
-                          retryMutation.mutate({
-                            taskId: taskDetailQuery.data!.id,
-                            taskItemId: item.id,
-                          })
-                        }
-                      >
-                        重试失败项
-                      </Button>
-                    ) : null,
-                  ]}
-                >
-                  <List.Item.Meta
-                    avatar={item.status === 'SUCCESS' ? <CheckCircleOutlined /> : <ClockCircleOutlined />}
-                    title={`${itemTypeLabelMap[item.itemType]} / 自动重试 ${item.autoRetryCount} 次 / 手动重试 ${item.manualRetryCount} 次`}
-                    description={
-                      <Space orientation="vertical">
-                        <StatusTag status={item.status} />
-                        {item.lastErrorMessage ? <Typography.Text type="secondary">{item.lastErrorMessage}</Typography.Text> : null}
-                      </Space>
-                    }
-                  />
-                </List.Item>
-              )}
-            />
+            <Card variant="borderless" className="settings-card" style={{ padding: 12 }}>
+              <Descriptions bordered column={1}>
+                <Descriptions.Item label="任务号">{taskDetailQuery.data.taskNo}</Descriptions.Item>
+                <Descriptions.Item label="状态">
+                  <StatusTag status={taskDetailQuery.data.status} />
+                </Descriptions.Item>
+                <Descriptions.Item label="说明">
+                  {taskDetailQuery.data.taskRemark ?? taskDetailQuery.data.lastErrorMessage ?? '无'}
+                </Descriptions.Item>
+              </Descriptions>
+            </Card>
+            <div style={{ marginBottom: 8 }}>
+              <Typography.Title level={5} style={{ margin: '0 0 16px 4px', fontWeight: 600 }}>子任务执行列表</Typography.Title>
+              <List
+                dataSource={taskDetailQuery.data.items}
+                renderItem={(item) => (
+                  <List.Item
+                    actions={[
+                      item.status === 'FAIL' ? (
+                        <Button
+                          key="retry"
+                          type="primary"
+                          danger
+                          ghost
+                          loading={retryMutation.isPending}
+                          onClick={() =>
+                            retryMutation.mutate({
+                              taskId: taskDetailQuery.data!.id,
+                              taskItemId: item.id,
+                            })
+                          }
+                        >
+                          重试失败项
+                        </Button>
+                      ) : null,
+                    ]}
+                  >
+                    <List.Item.Meta
+                      avatar={item.status === 'SUCCESS' ? <CheckCircleOutlined /> : <ClockCircleOutlined />}
+                      title={`${itemTypeLabelMap[item.itemType]} (自动重试 ${item.autoRetryCount} 次 / 手动 ${item.manualRetryCount} 次)`}
+                      description={
+                        <Space orientation="vertical" size={8} style={{ marginTop: 8 }}>
+                          <StatusTag status={item.status} />
+                          {item.lastErrorMessage ? <Typography.Text type="secondary" style={{ fontSize: 13, background: '#f1f5f9', padding: '4px 8px', borderRadius: 6, display: 'inline-block' }}>{item.lastErrorMessage}</Typography.Text> : null}
+                        </Space>
+                      }
+                    />
+                  </List.Item>
+                )}
+              />
+            </div>
           </Space>
         )}
       </Drawer>
@@ -1150,39 +1225,44 @@ export function NotificationListPage() {
         description="支持已读/未读筛选、通知类型筛选、精确未读数量展示，以及自动已读和批量已读。"
         extra={<Statistic title="未读数量" value={unreadQuery.data?.unreadCount ?? 0} />}
       />
-      <Card variant="borderless">
-        <Form layout="inline" onFinish={(values) => setFilters({ ...filters, ...values })}>
-          <Form.Item label="状态" name="status">
-            <Select
-              allowClear
-              style={{ width: 140 }}
-              options={[
-                { label: '未读', value: 'UNREAD' },
-                { label: '已读', value: 'READ' },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item label="类型" name="type">
-            <Select
-              allowClear
-              style={{ width: 180 }}
-              options={Object.entries(notificationTypeLabelMap).map(([value, label]) => ({ label, value }))}
-            />
-          </Form.Item>
-          <Form.Item>
-            <Button type="primary" htmlType="submit">
-              筛选
-            </Button>
-          </Form.Item>
-          <Form.Item>
-            <Button
-              disabled={selectedRowKeys.length === 0}
-              onClick={() => markBatchMutation.mutate(selectedRowKeys.map((item) => Number(item)))}
-            >
-              批量标记已读
-            </Button>
-          </Form.Item>
-        </Form>
+      <Card variant="borderless" className="data-table-card">
+        <div className="filter-bar">
+          <Form layout="inline" onFinish={(values) => setFilters({ ...filters, ...values })}>
+            <Form.Item label="状态" name="status">
+              <Select
+                allowClear
+                style={{ width: 140 }}
+                options={[
+                  { label: '未读', value: 'UNREAD' },
+                  { label: '已读', value: 'READ' },
+                ]}
+                size="large"
+              />
+            </Form.Item>
+            <Form.Item label="类型" name="type">
+              <Select
+                allowClear
+                style={{ width: 180 }}
+                options={Object.entries(notificationTypeLabelMap).map(([value, label]) => ({ label, value }))}
+                size="large"
+              />
+            </Form.Item>
+            <Form.Item>
+              <Button type="primary" htmlType="submit" size="large">
+                筛选
+              </Button>
+            </Form.Item>
+            <Form.Item>
+              <Button
+                size="large"
+                disabled={selectedRowKeys.length === 0}
+                onClick={() => markBatchMutation.mutate(selectedRowKeys.map((item) => Number(item)))}
+              >
+                批量标记已读
+              </Button>
+            </Form.Item>
+          </Form>
+        </div>
         <Table<NotificationRecord>
           style={{ marginTop: 16 }}
           rowKey="id"
@@ -1193,28 +1273,39 @@ export function NotificationListPage() {
             onChange: (keys) => setSelectedRowKeys(keys.map((item) => Number(item))),
           }}
           columns={[
-            { title: '标题', dataIndex: 'title', width: 220 },
-            { title: '摘要', dataIndex: 'summary' },
+            { title: '标题', dataIndex: 'title', width: 320 },
+            { 
+              title: '摘要', 
+              dataIndex: 'summary',
+              render: (text: string) => (
+                <Typography.Text 
+                  style={{ maxWidth: 300, margin: 0, fontSize: 16, fontWeight: 600 }} 
+                  ellipsis={{ tooltip: text }}
+                >
+                  {text}
+                </Typography.Text>
+              )
+            },
             {
               title: '类型',
               dataIndex: 'type',
-              width: 160,
+              width: 140,
               render: (value: NotificationType) => <Tag color="blue">{notificationTypeLabelMap[value]}</Tag>,
             },
             {
               title: '状态',
               dataIndex: 'status',
-              width: 120,
+              width: 100,
               render: (value: 'READ' | 'UNREAD') => <Tag color={value === 'UNREAD' ? 'gold' : 'default'}>{value === 'UNREAD' ? '未读' : '已读'}</Tag>,
             },
             { title: '时间', dataIndex: 'createdAt', width: 180 },
             {
               title: '操作',
               key: 'actions',
-              width: 220,
+              width: 120,
               render: (_, record) => (
-                <Space>
-                  <Button size="small" onClick={() => navigate(`/notifications/${record.id}`)}>
+                <Space direction="vertical" size="small">
+                  <Button type="primary" size="small" onClick={() => navigate(`/notifications/${record.id}`)} style={{ width: '100%' }}>
                     查看详情
                   </Button>
                   <Button
@@ -1222,6 +1313,7 @@ export function NotificationListPage() {
                     disabled={record.status === 'READ'}
                     loading={markReadMutation.isPending}
                     onClick={() => markReadMutation.mutate(record.id)}
+                    style={{ width: '100%' }}
                   >
                     标记已读
                   </Button>
@@ -1263,28 +1355,30 @@ export function NotificationDetailPage() {
   return (
     <div className="page-stack">
       <PageHeaderCard title="通知详情" description="进入详情后自动标记已读，并保留跳转任务详情的入口。" />
-      <Card variant="borderless">
-        {!detailQuery.data ? (
-          <Empty description="未找到通知详情" />
-        ) : (
-          <Descriptions bordered column={1}>
-            <Descriptions.Item label="标题">{detailQuery.data.title}</Descriptions.Item>
-            <Descriptions.Item label="通知类型">
-              <Tag color="blue">{notificationTypeLabelMap[detailQuery.data.type]}</Tag>
-            </Descriptions.Item>
-            <Descriptions.Item label="摘要">{detailQuery.data.summary}</Descriptions.Item>
-            <Descriptions.Item label="详细内容">{detailQuery.data.content}</Descriptions.Item>
-            <Descriptions.Item label="创建时间">{detailQuery.data.createdAt}</Descriptions.Item>
-            <Descriptions.Item label="跳转目标">
-              {detailQuery.data.targetTaskId ? (
-                <Button onClick={() => navigate('/tasks')}>前往任务列表查看任务 {detailQuery.data.targetTaskId}</Button>
-              ) : (
-                '无'
-              )}
-            </Descriptions.Item>
-          </Descriptions>
-        )}
-      </Card>
+      <div className="settings-container" style={{ maxWidth: 800 }}>
+        <Card variant="borderless" className="settings-card" style={{ padding: 24 }}>
+          {!detailQuery.data ? (
+            <Empty description="未找到通知详情" />
+          ) : (
+            <Descriptions bordered column={1}>
+              <Descriptions.Item label="标题">{detailQuery.data.title}</Descriptions.Item>
+              <Descriptions.Item label="通知类型">
+                <Tag color="blue">{notificationTypeLabelMap[detailQuery.data.type]}</Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="摘要">{detailQuery.data.summary}</Descriptions.Item>
+              <Descriptions.Item label="详细内容">{detailQuery.data.content}</Descriptions.Item>
+              <Descriptions.Item label="创建时间">{detailQuery.data.createdAt}</Descriptions.Item>
+              <Descriptions.Item label="跳转目标">
+                {detailQuery.data.targetTaskId ? (
+                  <Button type="primary" ghost onClick={() => navigate('/tasks')}>前往任务列表查看任务 {detailQuery.data.targetTaskId}</Button>
+                ) : (
+                  '无'
+                )}
+              </Descriptions.Item>
+            </Descriptions>
+          )}
+        </Card>
+      </div>
     </div>
   )
 }

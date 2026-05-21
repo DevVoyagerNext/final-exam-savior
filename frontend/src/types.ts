@@ -2,7 +2,7 @@ export type UserRole = 'ADMIN' | 'USER'
 export type UserStatus = 'ENABLED' | 'DISABLED'
 export type Visibility = 'PUBLIC' | 'PRIVATE_ADMIN'
 export type GenerateStatus = 'PENDING' | 'PROCESSING' | 'PARTIAL_SUCCESS' | 'SUCCESS' | 'FAIL'
-export type PreviewStatus = 'PENDING' | 'PROCESSING' | 'SUCCESS' | 'FAIL'
+export type PreviewStatus = 'SUCCESS'
 export type TaskItemType = 'QUESTION' | 'KNOWLEDGE' | 'EXTENDED'
 export type InviteCodeStatus = 'ACTIVE' | 'DISABLED'
 export type NotificationStatus = 'READ' | 'UNREAD'
@@ -60,7 +60,6 @@ export interface RegisterRequest {
   password: string
   confirmPassword: string
   inviteCode: string
-  captchaData: GeetestValidateResult
 }
 
 export interface RefreshTokenRequest {
@@ -197,7 +196,7 @@ export interface FileDetail extends FileListItem {
     items: GenerateRecordItem[]
   }
   previewRecord: {
-    previewMode: 'DIRECT' | 'CONVERT_TO_PDF'
+    previewMode: 'DIRECT'
     previewStatus: PreviewStatus
     previewObjectUrl: string | null
   }
@@ -205,7 +204,7 @@ export interface FileDetail extends FileListItem {
 
 export interface PreviewInfo {
   fileId: number
-  previewMode?: 'DIRECT' | 'CONVERT_TO_PDF'
+  previewMode?: 'DIRECT'
   previewStatus?: PreviewStatus
   sourceFileType?: string
   previewUrl: string | null

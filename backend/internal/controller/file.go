@@ -106,19 +106,6 @@ func (ctl *Controller) PreviewSource(c *gin.Context) {
 	}
 	ctl.ok(c, data)
 }
-func (ctl *Controller) RetryPreviewConversion(c *gin.Context) {
-	current, _ := utils.ContextCurrentUser(c)
-	id, err := utils.MustUint64Param(c, "fileId")
-	if err != nil {
-		c.Error(err)
-		return
-	}
-	if err := ctl.svc.RetryPreviewConversion(c.Request.Context(), current, id); err != nil {
-		c.Error(err)
-		return
-	}
-	ctl.ok(c, nil)
-}
 func (ctl *Controller) PreviewResult(c *gin.Context) {
 	current, _ := utils.ContextCurrentUser(c)
 	id, err := utils.MustUint64Param(c, "fileId")

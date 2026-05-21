@@ -1,5 +1,5 @@
 import { Typography } from 'antd'
-import { CheckCircleFilled, LoadingOutlined } from '@ant-design/icons'
+import { CheckCircleFilled, LoadingOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
 import { useEffect, useId, useMemo, useState } from 'react'
 
 import { GEETEST_CAPTCHA_ID, GEETEST_SCRIPT_URL } from './config.ts'
@@ -145,29 +145,34 @@ export function GeetestCaptchaPanel(props: {
   return (
     <div className={`security-check security-check--${status}`}>
       <div className="security-check__header">
-        <Typography.Text strong>安全验证</Typography.Text>
+        <div className="security-check__title">
+          <SafetyCertificateOutlined style={{ marginRight: 8, color: '#9ca3af' }} />
+          <span>安全验证</span>
+        </div>
         <div className="security-check__state">
           {status === 'initializing' ? (
             <>
               <LoadingOutlined />
-              <span>加载中</span>
+              <span style={{ marginLeft: 6 }}>加载中...</span>
             </>
           ) : null}
           {status === 'success' || value ? (
             <>
               <CheckCircleFilled />
-              <span>已完成</span>
+              <span style={{ marginLeft: 6 }}>验证通过</span>
             </>
           ) : null}
-          {status === 'error' ? <span>暂时不可用</span> : null}
-          {status === 'ready' ? <span>请完成验证</span> : null}
+          {status === 'error' ? <span>验证服务不可用</span> : null}
+          {status === 'ready' ? null : null}
         </div>
       </div>
 
       <div id={containerId} className="geetest-container" />
 
       {status === 'error' ? (
-        <Typography.Text type="danger">{errorText || '安全验证加载失败，请刷新页面后重试。'}</Typography.Text>
+        <Typography.Text type="danger" style={{ fontSize: 13, marginTop: 8, display: 'block' }}>
+          {errorText || '安全验证加载失败，请刷新页面后重试。'}
+        </Typography.Text>
       ) : null}
     </div>
   )

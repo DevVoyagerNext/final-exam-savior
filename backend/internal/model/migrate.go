@@ -6,12 +6,10 @@ func AutoMigrateModels() []any {
 		&InviteCode{},
 		&FileCategory{},
 		&LearningFile{},
-		&FilePreviewRecord{},
 		&FileGenerateRecord{},
 		&FileGenerateRecordItem{},
 		&GenerateTask{},
 		&GenerateTaskItem{},
-		&PreviewConversionTask{},
 		&TaskRetryLog{},
 		&SystemNotification{},
 	}

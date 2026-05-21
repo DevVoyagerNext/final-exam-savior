@@ -25,7 +25,6 @@ type RegisterRequest struct {
 	Password        string `json:"password"`
 	ConfirmPassword string `json:"confirmPassword"`
 	InviteCode      string `json:"inviteCode"`
-	platform.CaptchaPayload
 }
 
 type LoginRequest struct {

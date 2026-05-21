@@ -29,6 +29,3 @@ type AuthClaims struct {
 type GenerateEvent struct {
 	TaskID uint64 `json:"taskId"`
 }
-type PreviewEvent struct {
-	ConversionTaskID uint64 `json:"conversionTaskId"`
-}

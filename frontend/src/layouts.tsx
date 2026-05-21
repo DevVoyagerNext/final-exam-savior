@@ -10,7 +10,7 @@ import {
   UserOutlined,
 } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
-import { Avatar, Badge, Button, Dropdown, Layout, Menu, Space, Typography } from 'antd'
+import { Avatar, Badge, Button, Dropdown, Layout, Menu, Space, Tag, Typography } from 'antd'
 import type { MenuProps } from 'antd'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 
@@ -30,7 +30,9 @@ function buildMenuItems(isAdmin: boolean): MenuProps['items'] {
   ]
 
   if (!isAdmin) {
-    return baseItems.filter((item) => item?.key !== '/upload' && item?.key !== '/tasks')
+    return baseItems.filter(
+      (item) => item?.key !== '/upload' && item?.key !== '/tasks' && item?.key !== '/notifications',
+    )
   }
 
   return [
@@ -63,10 +65,13 @@ export function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const { user, isAdmin, logout } = useAuth()
+  const roleLabel = isAdmin ? '管理员' : '普通用户'
+  const roleColor = isAdmin ? 'gold' : 'blue'
 
   const unreadQuery = useQuery({
     queryKey: ['unread-count'],
     queryFn: notificationApi.unreadCount,
+    enabled: isAdmin,
   })
 
   const selectedKey = location.pathname.startsWith('/files/')
@@ -108,21 +113,25 @@ export function AppLayout() {
       </Sider>
       <Layout>
         <Header className="app-shell__header">
-          <Space size="middle">
-            <Badge count={unreadQuery.data?.unreadCount ?? 0} overflowCount={99}>
-              <Button
-                type="text"
-                icon={<NotificationOutlined />}
-                onClick={() => navigate('/notifications')}
-              >
-                通知
-              </Button>
-            </Badge>
+          <Space size="middle" align="center" style={{ height: '100%', display: 'flex', alignItems: 'center' }}>
+            {isAdmin ? (
+              <Badge count={unreadQuery.data?.unreadCount ?? 0} overflowCount={99} style={{ transform: 'translateY(-2px)' }}>
+                <Button
+                  type="text"
+                  icon={<NotificationOutlined />}
+                  onClick={() => navigate('/notifications')}
+                  style={{ display: 'flex', alignItems: 'center', height: 32, padding: '4px 8px' }}
+                >
+                  通知
+                </Button>
+              </Badge>
+            ) : null}
             <Dropdown menu={{ items: menuItems }} trigger={['click']}>
-              <Button type="text">
-                <Space>
-                  <Avatar size="small" icon={<UserOutlined />} />
-                  <span>{user?.email ?? '未登录用户'}</span>
+              <Button type="text" style={{ display: 'flex', alignItems: 'center', height: 32, padding: '4px 8px' }}>
+                <Space align="center">
+                  <Avatar size="small" icon={<UserOutlined />} style={{ transform: 'translateY(-1px)' }} />
+                  <span style={{ lineHeight: '24px' }}>{user?.email ?? '未登录用户'}</span>
+                  <Tag color={roleColor} style={{ margin: 0 }}>{roleLabel}</Tag>
                 </Space>
               </Button>
             </Dropdown>

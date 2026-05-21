@@ -23,7 +23,6 @@ import (
 // StartWorkers 启动后台任务工作协程
 func (s *Service) StartWorkers(ctx context.Context) {
 	go s.consumeGenerateStream(ctx) // 启动 AI 内容生成任务消费者
-	go s.consumePreviewStream(ctx)  // 启动预览转换任务消费者
 }
 
 // consumeGenerateStream 监听并消费 AI 内容生成任务队列 (Redis Stream)
@@ -62,33 +61,6 @@ func (s *Service) consumeGenerateStream(ctx context.Context) {
 	}
 }
 
-// consumePreviewStream 监听并消费文件预览转换任务队列 (Redis Stream)
-func (s *Service) consumePreviewStream(ctx context.Context) {
-	for ctx.Err() == nil {
-		streams, err := s.dao.Redis().XReadGroup(ctx, &redis.XReadGroupArgs{
-			Group:    s.cfg.Redis.ConsumerGroup,
-			Consumer: s.cfg.Redis.ConsumerName,
-			Streams:  []string{s.cfg.Redis.PreviewStream, ">"},
-			Count:    1,
-			Block:    s.cfg.Redis.BlockTimeout,
-		}).Result()
-		if err != nil {
-			if errors.Is(err, redis.Nil) || strings.Contains(err.Error(), "context canceled") {
-				continue
-			}
-			time.Sleep(time.Second)
-			continue
-		}
-		for _, stream := range streams {
-			for _, msg := range stream.Messages {
-				if err := s.handlePreviewMessage(ctx, msg); err == nil {
-					s.ackAndDeleteStreamMessage(ctx, s.cfg.Redis.PreviewStream, msg.ID)
-				}
-			}
-		}
-	}
-}
-
 func (s *Service) ackAndDeleteStreamMessage(ctx context.Context, stream string, messageID string) {
 	_ = s.dao.Redis().XAck(ctx, stream, s.cfg.Redis.ConsumerGroup, messageID).Err()
 	_ = s.dao.Redis().XDel(ctx, stream, messageID).Err()
@@ -109,19 +81,6 @@ func (s *Service) handleGenerateMessage(ctx context.Context, msg redis.XMessage)
 		fmt.Printf("[Worker] processGenerateTask failed for taskID=%d: %v\n", event.TaskID, err)
 	}
 	return err
-}
-
-// handlePreviewMessage 解析并分发预览转换任务消息
-func (s *Service) handlePreviewMessage(ctx context.Context, msg redis.XMessage) error {
-	raw, ok := msg.Values["payload"].(string)
-	if !ok {
-		return fmt.Errorf("preview payload missing")
-	}
-	var event PreviewEvent
-	if err := json.Unmarshal([]byte(raw), &event); err != nil {
-		return fmt.Errorf("unmarshal preview event: %w", err)
-	}
-	return s.processPreviewTask(ctx, event.ConversionTaskID)
 }
 
 // ListTasks 查询当前用户的任务列表（仅限管理员或任务所有者）
@@ -254,117 +213,6 @@ func (s *Service) RetryTaskItem(ctx context.Context, current *CurrentUser, taskI
 		return fmt.Errorf("push retry task to stream: %w", err)
 	}
 	return nil
-}
-
-// enqueuePreviewTask 将预览转换任务加入异步处理队列
-func (s *Service) enqueuePreviewTask(ctx context.Context, userID uint64, file model.LearningFile) error {
-	now := time.Now()
-	var pushTaskID uint64
-	err := s.dao.Gorm().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 创建预览转换任务记录
-		task := model.PreviewConversionTask{
-			FileID:            &file.ID,
-			RequestUserID:     userID,
-			SourceFileType:    file.SourceFileType,
-			Status:            "PENDING",
-			MaxAutoRetryCount: 3,
-			RetryIntervalSec:  5,
-			ExpiresAt:         now.Add(30 * 24 * time.Hour),
-		}
-		if err := tx.Create(&task).Error; err != nil {
-			return fmt.Errorf("create preview conversion task: %w", err)
-		}
-		pushTaskID = task.ID
-		return nil
-	})
-
-	if err != nil {
-		return normalizeErr(err)
-	}
-
-	// 发送 Redis 消息
-	payload, err := json.Marshal(PreviewEvent{ConversionTaskID: pushTaskID})
-	if err != nil {
-		return fmt.Errorf("marshal preview event: %w", err)
-	}
-	if err := s.dao.Redis().XAdd(ctx, &redis.XAddArgs{
-		Stream: s.cfg.Redis.PreviewStream,
-		Values: map[string]any{"payload": string(payload)},
-	}).Err(); err != nil {
-		return fmt.Errorf("push preview event: %w", err)
-	}
-	return nil
-}
-
-// processPreviewTask 在新方案下不再做转 PDF，而是把预览状态直接切为可在线预览
-func (s *Service) processPreviewTask(ctx context.Context, taskID uint64) error {
-	var task model.PreviewConversionTask
-	if err := s.dao.Gorm().WithContext(ctx).First(&task, taskID).Error; err != nil {
-		return err
-	}
-	if task.FileID == nil {
-		return nil
-	}
-	var file model.LearningFile
-	if err := s.dao.Gorm().WithContext(ctx).First(&file, *task.FileID).Error; err != nil {
-		return err
-	}
-	now := time.Now()
-	_ = s.dao.Gorm().WithContext(ctx).Model(&task).Updates(map[string]any{"status": "PROCESSING", "started_at": now}).Error
-
-	if _, _, err := s.buildSourcePreviewURL(ctx, file); err != nil {
-		return s.failPreviewTask(ctx, task, fmt.Errorf("build online preview url: %w", err))
-	}
-	// 更新任务状态和文件预览记录
-	return normalizeErr(s.dao.Gorm().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		finished := time.Now()
-		if err := tx.Model(&task).Updates(map[string]any{
-			"status":             "SUCCESS",
-			"preview_object_url": nil,
-			"finished_at":        finished,
-			"last_error_message": nil,
-		}).Error; err != nil {
-			return fmt.Errorf("update preview task success: %w", err)
-		}
-		if err := tx.Model(&model.FilePreviewRecord{}).Where("file_id = ?", file.ID).Updates(map[string]any{
-			"preview_mode":       "DIRECT",
-			"preview_status":     "SUCCESS",
-			"preview_object_url": nil,
-			"last_success_at":    finished,
-			"last_error_message": nil,
-		}).Error; err != nil {
-			return fmt.Errorf("update latest preview record: %w", err)
-		}
-		// 发送在线预览准备完成通知
-		return tx.Create(&model.SystemNotification{
-			UserID:     file.UploadUserID,
-			Type:       "PREVIEW_CONVERSION_SUCCESS",
-			Title:      "预览已就绪",
-			Summary:    fmt.Sprintf("%s 已切换为第三方在线预览", file.SourceFileName),
-			Status:     "UNREAD",
-			TargetType: "PREVIEW_TASK",
-			TargetID:   &task.ID,
-			ExpiresAt:  finished.Add(30 * 24 * time.Hour),
-		}).Error
-	}))
-}
-
-// failPreviewTask 标记预览转换任务为失败并记录原因
-func (s *Service) failPreviewTask(ctx context.Context, task model.PreviewConversionTask, cause error) error {
-	msg := cause.Error()
-	now := time.Now()
-	_ = s.dao.Gorm().WithContext(ctx).Model(&task).Updates(map[string]any{
-		"status":             "FAIL",
-		"finished_at":        now,
-		"last_error_message": msg,
-	}).Error
-	if task.FileID != nil {
-		_ = s.dao.Gorm().WithContext(ctx).Model(&model.FilePreviewRecord{}).Where("file_id = ?", *task.FileID).Updates(map[string]any{
-			"preview_status":     "FAIL",
-			"last_error_message": msg,
-		}).Error
-	}
-	return cause
 }
 
 // processGenerateTask 执行 AI 内容生成任务的主流程（包含文本提取与多项并发生成）

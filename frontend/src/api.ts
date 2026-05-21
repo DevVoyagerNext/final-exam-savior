@@ -265,19 +265,13 @@ export const authApi = {
 
   async register(payload: RegisterRequest) {
     return unwrap<AuthResult>(
-      http.post(
-        '/auth/register',
-        withCaptchaPayload(
-          {
-            email: payload.email,
-            emailCode: payload.emailCode,
-            password: payload.password,
-            confirmPassword: payload.confirmPassword,
-            inviteCode: payload.inviteCode,
-          },
-          payload.captchaData,
-        ),
-      ),
+      http.post('/auth/register', {
+        email: payload.email,
+        emailCode: payload.emailCode,
+        password: payload.password,
+        confirmPassword: payload.confirmPassword,
+        inviteCode: payload.inviteCode,
+      }),
     )
   },
 
@@ -433,10 +427,6 @@ export const adminApi = {
 
   async listAdminFiles(filters: FileFilters) {
     return unwrap<PagedResult<FileListItem>>(http.get('/admin/files', { params: filters }))
-  },
-
-  async retryPreviewConversion(fileId: number) {
-    return unwrap<void>(http.post(`/admin/files/${fileId}/preview-conversion/retry`))
   },
 
   async listInviteCodes(filters: InviteCodeFilters) {

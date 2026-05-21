@@ -64,10 +64,10 @@ func (v *GeetestValidator) Validate(ctx context.Context, payload CaptchaPayload)
 	form.Set("captcha_output", payload.CaptchaOutput)
 	form.Set("pass_token", payload.PassToken)
 	form.Set("gen_time", payload.GenTime)
-	form.Set("captcha_id", payload.CaptchaID)
 	form.Set("sign_token", signToken)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, v.cfg.ValidateURL, strings.NewReader(form.Encode()))
+	reqURL := fmt.Sprintf("%s?captcha_id=%s", v.cfg.ValidateURL, payload.CaptchaID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return fmt.Errorf("build geetest request: %w", err)
 	}
@@ -89,7 +89,7 @@ func (v *GeetestValidator) Validate(ctx context.Context, payload CaptchaPayload)
 		Status      string          `json:"status"`
 		Result      string          `json:"result"`
 		CaptchaArgs json.RawMessage `json:"captcha_args"`
-		Reason      string          `json:"msg"`
+		Reason      string          `json:"reason"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		log.Printf("[GEETEST] decode response failed captcha_id=%s lot_number=%s err=%v raw=%s", payload.CaptchaID, payload.LotNumber, err, string(body))
@@ -108,7 +108,7 @@ func (v *GeetestValidator) Validate(ctx context.Context, payload CaptchaPayload)
 			string(result.CaptchaArgs),
 			payload.SignToken != "",
 		)
-		return fmt.Errorf(result.Reason)
+		return fmt.Errorf("极验验证失败: %s", result.Reason)
 	}
 	log.Printf("[GEETEST] validate success captcha_id=%s lot_number=%s captcha_args=%s has_sign_token=%t", payload.CaptchaID, payload.LotNumber, string(result.CaptchaArgs), payload.SignToken != "")
 	return nil

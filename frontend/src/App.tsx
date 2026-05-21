@@ -44,14 +44,14 @@ const router = createBrowserRouter([
           { path: '/files', element: <FileListPage /> },
           { path: '/files/:fileId', element: <FileDetailPage /> },
           { path: '/files/:fileId/results/:itemType', element: <GeneratedHtmlPreviewPage /> },
-          { path: '/upload', element: <UploadPage /> },
           { path: '/tasks', element: <TaskListPage /> },
-          { path: '/notifications', element: <NotificationListPage /> },
-          { path: '/notifications/:notificationId', element: <NotificationDetailPage /> },
           { path: '/password/change', element: <ChangePasswordPage /> },
           {
             element: <RequireAdmin />,
             children: [
+              { path: '/upload', element: <UploadPage /> },
+              { path: '/notifications', element: <NotificationListPage /> },
+              { path: '/notifications/:notificationId', element: <NotificationDetailPage /> },
               { path: '/admin/users', element: <UsersPage /> },
               { path: '/admin/categories', element: <CategoriesPage /> },
               { path: '/admin/invite-codes', element: <InviteCodesPage /> },

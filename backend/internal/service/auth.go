@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -62,11 +63,12 @@ func (s *Service) SendResetCode(ctx context.Context, email string, captcha platf
 
 func (s *Service) sendEmailCode(ctx context.Context, bizType, email string, captcha platform.CaptchaPayload) (map[string]any, error) {
 	email = normalizeEmail(email)
+	if err := s.captcha.Validate(ctx, captcha); err != nil {
+		log.Printf("[AUTH] sendEmailCode captcha validation failed: %v", err)
+		return nil, newError(http.StatusBadRequest, codeBusiness, err.Error(), err)
+	}
 	if err := validateQQEmail(email); err != nil {
 		return nil, err
-	}
-	if err := s.captcha.Validate(ctx, captcha); err != nil {
-		return nil, newError(http.StatusBadRequest, codeBusiness, "极验验证失败，请重新验证", err)
 	}
 	if err := s.checkAndIncreaseSendLimit(ctx, email); err != nil {
 		return nil, err
@@ -105,9 +107,6 @@ func (s *Service) Register(ctx context.Context, req request.RegisterRequest) (ma
 	}
 	if err := validatePasswordPair(req.Password, req.ConfirmPassword); err != nil {
 		return nil, err
-	}
-	if err := s.captcha.Validate(ctx, req.CaptchaPayload); err != nil {
-		return nil, newError(http.StatusBadRequest, codeBusiness, "极验验证失败，请重新验证", err)
 	}
 	if err := s.consumeEmailCode(ctx, "REGISTER", email, req.EmailCode); err != nil {
 		return nil, err
@@ -169,7 +168,8 @@ func (s *Service) Register(ctx context.Context, req request.RegisterRequest) (ma
 func (s *Service) Login(ctx context.Context, req request.LoginRequest, loginIP string, userAgent string) (map[string]any, error) {
 	email := normalizeEmail(req.Email)
 	if err := s.captcha.Validate(ctx, req.CaptchaPayload); err != nil {
-		return nil, newError(http.StatusBadRequest, codeBusiness, "极验验证失败，请重新验证", err)
+		log.Printf("[AUTH] login captcha validation failed: %v", err)
+		return nil, newError(http.StatusBadRequest, codeBusiness, err.Error(), err)
 	}
 	if err := s.checkLoginBan(ctx, email); err != nil {
 		return nil, err
