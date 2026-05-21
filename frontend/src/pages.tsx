@@ -938,25 +938,6 @@ export function UploadPage() {
             </div>
           </div>
           <Row gutter={[28, 28]} align="stretch">
-            <Col xs={24} xl={15}>
-              <div className="upload-stage-card">
-              <Form.Item
-                name="fileList"
-                valuePropName="fileList"
-                getValueFromEvent={(event) => event?.fileList ?? []}
-                rules={[{ required: true, message: '请选择要上传的文件' }]}
-                style={{ margin: 0 }}
-              >
-                <Upload.Dragger beforeUpload={() => false} maxCount={1} className="upload-dragger-massive">
-                  <div className="upload-icon-wrapper">
-                    <InboxOutlined className="upload-icon" />
-                  </div>
-                  <div className="upload-text">点击或拖拽上传</div>
-                  <div className="upload-stage-support">支持 `PDF / Word / PPT / 图片 / TXT / Markdown`</div>
-                </Upload.Dragger>
-              </Form.Item>
-              </div>
-            </Col>
             <Col xs={24} xl={9}>
               <div className="upload-sidebar">
                 <div className="upload-config-card">
@@ -999,6 +980,25 @@ export function UploadPage() {
                     </Button>
                   </div>
                 </div>
+              </div>
+            </Col>
+            <Col xs={24} xl={15}>
+              <div className="upload-stage-card">
+                <Form.Item
+                  name="fileList"
+                  valuePropName="fileList"
+                  getValueFromEvent={(event) => event?.fileList ?? []}
+                  rules={[{ required: true, message: '请选择要上传的文件' }]}
+                  style={{ margin: 0 }}
+                >
+                  <Upload.Dragger beforeUpload={() => false} maxCount={1} className="upload-dragger-massive">
+                    <div className="upload-icon-wrapper">
+                      <InboxOutlined className="upload-icon" />
+                    </div>
+                    <div className="upload-text">点击或拖拽上传</div>
+                    <div className="upload-stage-support">支持 `PDF / Word / PPT / 图片 / TXT / Markdown`</div>
+                  </Upload.Dragger>
+                </Form.Item>
               </div>
             </Col>
           </Row>
