@@ -34,7 +34,7 @@ func (s *Service) CreateCategory(ctx context.Context, current *CurrentUser, req 
 	record := model.FileCategory{
 		Name:      strings.TrimSpace(req.Name),
 		Status:    "ENABLED",
-		SortNo:    req.SortNo,
+		SortNo:    int(req.SortNo),
 		IsBuiltin: false,
 		CreatedBy: &current.User.ID,
 	}
@@ -62,7 +62,7 @@ func (s *Service) UpdateCategory(ctx context.Context, current *CurrentUser, cate
 		return newError(http.StatusBadRequest, codeBusiness, "默认分类不可禁用", nil)
 	}
 	updates := map[string]any{
-		"sort_no": req.SortNo,
+		"sort_no": int(req.SortNo),
 	}
 	if req.Name != "" {
 		updates["name"] = req.Name

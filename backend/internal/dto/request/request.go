@@ -1,6 +1,23 @@
 package request
 
-import "final-exam-savior/backend/internal/platform"
+import (
+	"final-exam-savior/backend/internal/platform"
+	"strconv"
+)
+
+type StringInt int
+
+func (st *StringInt) UnmarshalJSON(b []byte) error {
+	if len(b) >= 2 && b[0] == '"' && b[len(b)-1] == '"' {
+		b = b[1 : len(b)-1]
+	}
+	i, err := strconv.Atoi(string(b))
+	if err != nil {
+		return err
+	}
+	*st = StringInt(i)
+	return nil
+}
 
 type RegisterRequest struct {
 	Email           string `json:"email"`
@@ -56,14 +73,14 @@ type ListInviteCodeRequest struct {
 }
 
 type CategoryRequest struct {
-	Name   string `json:"name"`
-	SortNo int    `json:"sortNo"`
+	Name   string    `json:"name"`
+	SortNo StringInt `json:"sortNo"`
 }
 
 type UpdateCategoryRequest struct {
-	Name   string `json:"name"`
-	SortNo int    `json:"sortNo"`
-	Status string `json:"status"`
+	Name   string    `json:"name"`
+	SortNo StringInt `json:"sortNo"`
+	Status string    `json:"status"`
 }
 
 type ListFileRequest struct {
