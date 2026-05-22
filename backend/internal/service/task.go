@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -423,45 +422,6 @@ func (s *Service) syncGenerateRecordItem(ctx context.Context, fileID uint64, ite
 }
 
 // extractSourceText 从源文件中提取纯文本（支持文本、图片 OCR、文档解析）
-func (s *Service) extractSourceText(ctx context.Context, file model.LearningFile) (string, error) {
-	// 获取带签名的源文件 URL
-	signed, err := s.storage.SignGetURL(ctx, file.SourceObjectURL, s.cfg.App.SignedURLTTL)
-	if err != nil {
-		return "", fmt.Errorf("sign source url: %w", err)
-	}
-	// 如果是纯文本类型，直接下载并读取内容
-	if isPlainTextFile(file.SourceFileType, file.SourceFileName) {
-		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, signed, nil)
-		if reqErr != nil {
-			return "", fmt.Errorf("build text download request: %w", reqErr)
-		}
-		resp, respErr := s.httpClient.Do(req)
-		if respErr != nil {
-			return "", fmt.Errorf("download text source: %w", respErr)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-			return "", fmt.Errorf("download text source status %d: %s", resp.StatusCode, string(body))
-		}
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20)) // 限制读取 2MB
-		if readErr != nil {
-			return "", fmt.Errorf("read text source: %w", readErr)
-		}
-		text := strings.TrimSpace(string(body))
-		if text == "" {
-			return "", fmt.Errorf("text source is empty")
-		}
-		return text, nil
-	}
-	// 如果是图片，调用 AI 进行 OCR 识别
-	if strings.HasPrefix(file.SourceFileType, "image/") {
-		return s.ai.OCRText(ctx, signed)
-	}
-	// 其他文档（PDF/Docx 等）调用解析器提取文本
-	return s.parser.ExtractText(ctx, signed, file.SourceFileType)
-}
-
 // notifyGenerateResult 根据生成结果发送站内通知
 func (s *Service) notifyGenerateResult(ctx context.Context, task model.GenerateTask, file model.LearningFile, status string, lastError string) error {
 	typ := "GENERATE_SUCCESS"

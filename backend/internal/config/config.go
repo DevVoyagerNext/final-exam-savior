@@ -20,8 +20,6 @@ type Config struct {
 	OSS      OSSConfig      `mapstructure:"oss"`
 	AI       AIConfig       `mapstructure:"ai"`
 	Geetest  GeetestConfig  `mapstructure:"geetest"`
-	Preview  PreviewConfig  `mapstructure:"preview"`
-	Parser   ParserConfig   `mapstructure:"parser"`
 	App      AppConfig      `mapstructure:"app"`
 }
 
@@ -94,16 +92,6 @@ type GeetestConfig struct {
 	PrivateKey  string        `mapstructure:"private_key"`
 	ValidateURL string        `mapstructure:"validate_url"`
 	Timeout     time.Duration `mapstructure:"timeout"`
-}
-
-type PreviewConfig struct {
-	ConverterURL string        `mapstructure:"converter_url"`
-	Timeout      time.Duration `mapstructure:"timeout"`
-}
-
-type ParserConfig struct {
-	ExtractorURL string        `mapstructure:"extractor_url"`
-	Timeout      time.Duration `mapstructure:"timeout"`
 }
 
 type AppConfig struct {
@@ -249,12 +237,6 @@ func applyRuntimeValues(v *viper.Viper, cfg Config) Config {
 	cfg.Geetest.PrivateKey = firstNonEmpty(os.Getenv("APP_GEETEST_PRIVATE_KEY"), v.GetString("geetest.private_key"))
 	cfg.Geetest.ValidateURL = firstNonEmpty(os.Getenv("APP_GEETEST_VALIDATE_URL"), v.GetString("geetest.validate_url"))
 	cfg.Geetest.Timeout = v.GetDuration("geetest.timeout")
-
-	cfg.Preview.ConverterURL = firstNonEmpty(os.Getenv("APP_PREVIEW_CONVERTER_URL"), v.GetString("preview.converter_url"))
-	cfg.Preview.Timeout = v.GetDuration("preview.timeout")
-
-	cfg.Parser.ExtractorURL = firstNonEmpty(os.Getenv("APP_PARSER_EXTRACTOR_URL"), v.GetString("parser.extractor_url"))
-	cfg.Parser.Timeout = v.GetDuration("parser.timeout")
 
 	cfg.App.Env = firstNonEmpty(os.Getenv("APP_APP_ENV"), v.GetString("app.env"))
 	cfg.App.DefaultAdminEmail = firstNonEmpty(os.Getenv("APP_APP_DEFAULT_ADMIN_EMAIL"), v.GetString("app.default_admin_email"))

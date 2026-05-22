@@ -29,8 +29,6 @@ type Service struct {
 	storage      platform.ObjectStorage
 	localStorage *platform.LocalFileStorage
 	ai           platform.AIClient
-	parser       platform.Parser
-	converter    platform.Converter
 	httpClient   *http.Client
 }
 
@@ -54,8 +52,6 @@ func New(ctx context.Context, cfg config.Config) (*Service, error) {
 		storage:      storage,
 		localStorage: localStorage,
 		ai:           platform.NewOpenAICompatClient(cfg.AI),
-		parser:       platform.NewParser(cfg.Parser),
-		converter:    platform.NewHTTPConverter(cfg.Preview),
 		httpClient:   &http.Client{Timeout: 2 * time.Minute},
 	}
 
